@@ -1,0 +1,308 @@
+#![no_std]
+
+//! # router-timelock
+//!
+//! Delayed execution queue for sensitive router configuration changes.
+//! Any proposed change must wait a configurable delay before it can be executed.
+//!
+//! ## Features
+//! - Queue arbitrary change proposals with a description
+//! - Configurable minimum delay (e.g. 24h)
+//! - Cancel queued operations before execution
+//! - Executed operations cannot be re-executed
+
+use soroban_sdk::{contract, contractimpl, contracttype, contracterror, Address, Env, String};
+
+// ── Storage Keys ──────────────────────────────────────────────────────────────
+
+#[contracttype]
+pub enum DataKey {
+    Admin,
+    MinDelay,
+    Operation(u64),   // op_id -> TimelockOp
+    NextOpId,
+}
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct TimelockOp {
+    pub id: u64,
+    pub proposer: Address,
+    pub description: String,
+    /// Target contract address for the change
+    pub target: Address,
+    /// Earliest timestamp at which this op can execute
+    pub eta: u64,
+    pub executed: bool,
+    pub cancelled: bool,
+}
+
+// ── Errors ────────────────────────────────────────────────────────────────────
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum TimelockError {
+    AlreadyInitialized = 1,
+    NotInitialized = 2,
+    Unauthorized = 3,
+    NotFound = 4,
+    TooEarly = 5,
+    AlreadyExecuted = 6,
+    AlreadyCancelled = 7,
+    InvalidDelay = 8,
+}
+
+// ── Contract ──────────────────────────────────────────────────────────────────
+
+#[contract]
+pub struct RouterTimelock;
+
+#[contractimpl]
+impl RouterTimelock {
+    /// Initialize with admin and minimum delay in seconds.
+    pub fn initialize(env: Env, admin: Address, min_delay: u64) -> Result<(), TimelockError> {
+        if env.storage().instance().has(&DataKey::Admin) {
+            return Err(TimelockError::AlreadyInitialized);
+        }
+        if min_delay == 0 {
+            return Err(TimelockError::InvalidDelay);
+        }
+        env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage().instance().set(&DataKey::MinDelay, &min_delay);
+        env.storage().instance().set(&DataKey::NextOpId, &0u64);
+        Ok(())
+    }
+
+    /// Queue a new operation. Returns the operation ID.
+    pub fn queue(
+        env: Env,
+        proposer: Address,
+        description: String,
+        target: Address,
+        delay: u64,
+    ) -> Result<u64, TimelockError> {
+        proposer.require_auth();
+        Self::require_admin(&env, &proposer)?;
+
+        let min_delay: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MinDelay)
+            .ok_or(TimelockError::NotInitialized)?;
+
+        if delay < min_delay {
+            return Err(TimelockError::InvalidDelay);
+        }
+
+        let op_id: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::NextOpId)
+            .unwrap_or(0);
+
+        let eta = env.ledger().timestamp() + delay;
+
+        let op = TimelockOp {
+            id: op_id,
+            proposer,
+            description,
+            target,
+            eta,
+            executed: false,
+            cancelled: false,
+        };
+
+        env.storage().instance().set(&DataKey::Operation(op_id), &op);
+        env.storage().instance().set(&DataKey::NextOpId, &(op_id + 1));
+
+        Ok(op_id)
+    }
+
+    /// Execute a queued operation after its delay has elapsed.
+    pub fn execute(env: Env, caller: Address, op_id: u64) -> Result<(), TimelockError> {
+        caller.require_auth();
+        Self::require_admin(&env, &caller)?;
+
+        let mut op: TimelockOp = env
+            .storage()
+            .instance()
+            .get(&DataKey::Operation(op_id))
+            .ok_or(TimelockError::NotFound)?;
+
+        if op.executed {
+            return Err(TimelockError::AlreadyExecuted);
+        }
+        if op.cancelled {
+            return Err(TimelockError::AlreadyCancelled);
+        }
+        if env.ledger().timestamp() < op.eta {
+            return Err(TimelockError::TooEarly);
+        }
+
+        op.executed = true;
+        env.storage().instance().set(&DataKey::Operation(op_id), &op);
+
+        Ok(())
+    }
+
+    /// Cancel a queued operation before it executes.
+    pub fn cancel(env: Env, caller: Address, op_id: u64) -> Result<(), TimelockError> {
+        caller.require_auth();
+        Self::require_admin(&env, &caller)?;
+
+        let mut op: TimelockOp = env
+            .storage()
+            .instance()
+            .get(&DataKey::Operation(op_id))
+            .ok_or(TimelockError::NotFound)?;
+
+        if op.executed {
+            return Err(TimelockError::AlreadyExecuted);
+        }
+        if op.cancelled {
+            return Err(TimelockError::AlreadyCancelled);
+        }
+
+        op.cancelled = true;
+        env.storage().instance().set(&DataKey::Operation(op_id), &op);
+
+        Ok(())
+    }
+
+    /// Get an operation by ID.
+    pub fn get_op(env: Env, op_id: u64) -> Option<TimelockOp> {
+        env.storage().instance().get(&DataKey::Operation(op_id))
+    }
+
+    /// Get the minimum delay.
+    pub fn min_delay(env: Env) -> Result<u64, TimelockError> {
+        env.storage()
+            .instance()
+            .get(&DataKey::MinDelay)
+            .ok_or(TimelockError::NotInitialized)
+    }
+
+    /// Update the minimum delay.
+    pub fn set_min_delay(env: Env, caller: Address, new_delay: u64) -> Result<(), TimelockError> {
+        caller.require_auth();
+        Self::require_admin(&env, &caller)?;
+        if new_delay == 0 {
+            return Err(TimelockError::InvalidDelay);
+        }
+        env.storage().instance().set(&DataKey::MinDelay, &new_delay);
+        Ok(())
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    fn require_admin(env: &Env, caller: &Address) -> Result<(), TimelockError> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(TimelockError::NotInitialized)?;
+        if &admin != caller {
+            return Err(TimelockError::Unauthorized);
+        }
+        Ok(())
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+    use super::*;
+    use soroban_sdk::{testutils::{Address as _, Ledger}, Env, String};
+
+    fn setup() -> (Env, Address, RouterTimelockClient<'static>) {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.timestamp = 1000);
+        let contract_id = env.register_contract(None, RouterTimelock);
+        let client = RouterTimelockClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(&admin, &3600);
+        (env, admin, client)
+    }
+
+    #[test]
+    fn test_queue_and_execute() {
+        let (env, admin, client) = setup();
+        let target = Address::generate(&env);
+        let desc = String::from_str(&env, "upgrade oracle");
+        let op_id = client.queue(&admin, &desc, &target, &3600);
+        env.ledger().with_mut(|l| l.timestamp += 3601);
+        let result = client.try_execute(&admin, &op_id);
+        assert!(result.is_ok());
+        let op = client.get_op(&op_id).unwrap();
+        assert!(op.executed);
+    }
+
+    #[test]
+    fn test_execute_too_early_fails() {
+        let (env, admin, client) = setup();
+        let target = Address::generate(&env);
+        let desc = String::from_str(&env, "upgrade oracle");
+        let op_id = client.queue(&admin, &desc, &target, &3600);
+        let result = client.try_execute(&admin, &op_id);
+        assert_eq!(result, Err(Ok(TimelockError::TooEarly)));
+    }
+
+    #[test]
+    fn test_cancel_operation() {
+        let (env, admin, client) = setup();
+        let target = Address::generate(&env);
+        let desc = String::from_str(&env, "upgrade oracle");
+        let op_id = client.queue(&admin, &desc, &target, &3600);
+        client.cancel(&admin, &op_id);
+        let op = client.get_op(&op_id).unwrap();
+        assert!(op.cancelled);
+    }
+
+    #[test]
+    fn test_execute_cancelled_fails() {
+        let (env, admin, client) = setup();
+        let target = Address::generate(&env);
+        let desc = String::from_str(&env, "upgrade oracle");
+        let op_id = client.queue(&admin, &desc, &target, &3600);
+        client.cancel(&admin, &op_id);
+        env.ledger().with_mut(|l| l.timestamp += 3601);
+        let result = client.try_execute(&admin, &op_id);
+        assert_eq!(result, Err(Ok(TimelockError::AlreadyCancelled)));
+    }
+
+    #[test]
+    fn test_double_execute_fails() {
+        let (env, admin, client) = setup();
+        let target = Address::generate(&env);
+        let desc = String::from_str(&env, "upgrade oracle");
+        let op_id = client.queue(&admin, &desc, &target, &3600);
+        env.ledger().with_mut(|l| l.timestamp += 3601);
+        client.execute(&admin, &op_id);
+        let result = client.try_execute(&admin, &op_id);
+        assert_eq!(result, Err(Ok(TimelockError::AlreadyExecuted)));
+    }
+
+    #[test]
+    fn test_delay_below_minimum_fails() {
+        let (env, admin, client) = setup();
+        let target = Address::generate(&env);
+        let desc = String::from_str(&env, "upgrade oracle");
+        let result = client.try_queue(&admin, &desc, &target, &100);
+        assert_eq!(result, Err(Ok(TimelockError::InvalidDelay)));
+    }
+
+    #[test]
+    fn test_unauthorized_queue_fails() {
+        let (env, _admin, client) = setup();
+        let attacker = Address::generate(&env);
+        let target = Address::generate(&env);
+        let desc = String::from_str(&env, "malicious");
+        let result = client.try_queue(&attacker, &desc, &target, &3600);
+        assert_eq!(result, Err(Ok(TimelockError::Unauthorized)));
+    }
+}
