@@ -68,6 +68,19 @@ pub struct RouterMiddleware;
 #[contractimpl]
 impl RouterMiddleware {
     /// Initialize middleware with an admin.
+    ///
+    /// Must be called exactly once. Sets the admin, enables middleware globally,
+    /// and resets the total call counter to zero.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `admin` - The address that will have admin privileges over this middleware.
+    ///
+    /// # Returns
+    /// `Ok(())` on success.
+    ///
+    /// # Errors
+    /// * [`MiddlewareError::AlreadyInitialized`] — if the contract has already been initialized.
     pub fn initialize(env: Env, admin: Address) -> Result<(), MiddlewareError> {
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(MiddlewareError::AlreadyInitialized);
@@ -79,6 +92,26 @@ impl RouterMiddleware {
     }
 
     /// Configure a route's middleware settings.
+    ///
+    /// Sets the rate-limit window and call cap for `route`, and whether the
+    /// route is enabled. If `max_calls_per_window` is 0, rate limiting is
+    /// disabled for that route. Caller must be the admin.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `caller` - The address initiating the call; must be the admin.
+    /// * `route` - The route name to configure.
+    /// * `max_calls_per_window` - Maximum allowed calls per time window (0 = unlimited).
+    /// * `window_seconds` - Duration of the rate-limit window in seconds.
+    /// * `enabled` - Whether this route should be enabled.
+    ///
+    /// # Returns
+    /// `Ok(())` on success.
+    ///
+    /// # Errors
+    /// * [`MiddlewareError::Unauthorized`] — if `caller` is not the admin.
+    /// * [`MiddlewareError::InvalidConfig`] — if `window_seconds` is 0 while `max_calls_per_window` > 0.
+    /// * [`MiddlewareError::NotInitialized`] — if the contract has not been initialized.
     pub fn configure_route(
         env: Env,
         caller: Address,
@@ -104,7 +137,24 @@ impl RouterMiddleware {
     }
 
     /// Pre-call hook: validates rate limits and route status.
-    /// Called before routing to a contract. Returns Ok if call should proceed.
+    ///
+    /// Must be called before routing to a contract. Checks that middleware is
+    /// globally enabled, that the specific route is enabled, and that the
+    /// `caller` has not exceeded their rate limit for `route`. On success,
+    /// increments the global call counter and emits a `pre_call` event.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `caller` - The address making the routed call.
+    /// * `route` - The name of the route being called.
+    ///
+    /// # Returns
+    /// `Ok(())` if the call is allowed to proceed.
+    ///
+    /// # Errors
+    /// * [`MiddlewareError::MiddlewareDisabled`] — if middleware is globally disabled.
+    /// * [`MiddlewareError::RouteDisabled`] — if the specific route is disabled.
+    /// * [`MiddlewareError::RateLimitExceeded`] — if `caller` has exceeded the rate limit for `route`.
     pub fn pre_call(
         env: Env,
         caller: Address,
@@ -177,7 +227,16 @@ impl RouterMiddleware {
         Ok(())
     }
 
-    /// Post-call hook: emits success event.
+    /// Post-call hook: emits a success or failure event.
+    ///
+    /// Should be called after a routed contract call completes. Emits a
+    /// `post_call` event with the caller, route name, and outcome.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `caller` - The address that made the routed call.
+    /// * `route` - The name of the route that was called.
+    /// * `success` - `true` if the call succeeded, `false` if it failed.
     pub fn post_call(env: Env, caller: Address, route: String, success: bool) {
         env.events().publish(
             (Symbol::new(&env, "post_call"),),
@@ -186,6 +245,22 @@ impl RouterMiddleware {
     }
 
     /// Enable or disable all middleware globally.
+    ///
+    /// When disabled, `pre_call` will return
+    /// [`MiddlewareError::MiddlewareDisabled`] for every route. Caller must be
+    /// the admin.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `caller` - The address initiating the call; must be the admin.
+    /// * `enabled` - `true` to enable middleware, `false` to disable it.
+    ///
+    /// # Returns
+    /// `Ok(())` on success.
+    ///
+    /// # Errors
+    /// * [`MiddlewareError::Unauthorized`] — if `caller` is not the admin.
+    /// * [`MiddlewareError::NotInitialized`] — if the contract has not been initialized.
     pub fn set_global_enabled(
         env: Env,
         caller: Address,
@@ -198,16 +273,46 @@ impl RouterMiddleware {
     }
 
     /// Get total calls processed.
+    ///
+    /// Returns the cumulative count of calls that have passed through
+    /// `pre_call` since the contract was initialized.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    ///
+    /// # Returns
+    /// The total number of pre-call invocations.
     pub fn total_calls(env: Env) -> u64 {
         env.storage().instance().get(&DataKey::TotalCalls).unwrap_or(0)
     }
 
     /// Get rate limit state for a caller.
+    ///
+    /// Returns the current [`RateLimitState`] for `caller`, which includes the
+    /// number of calls made in the current window and when the window started.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `caller` - The address whose rate limit state to retrieve.
+    ///
+    /// # Returns
+    /// `Some(`[`RateLimitState`]`)` if the caller has made at least one call,
+    /// `None` otherwise.
     pub fn rate_limit_state(env: Env, caller: Address) -> Option<RateLimitState> {
         env.storage().instance().get(&DataKey::RateLimit(caller))
     }
 
     /// Get config for a route.
+    ///
+    /// Returns the [`RouteConfig`] for `route` if one has been set via
+    /// `configure_route`.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `route` - The route name to look up.
+    ///
+    /// # Returns
+    /// `Some(`[`RouteConfig`]`)` if a config exists for `route`, `None` otherwise.
     pub fn route_config(env: Env, route: String) -> Option<RouteConfig> {
         env.storage().instance().get(&DataKey::RouteConfig(route))
     }

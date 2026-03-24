@@ -79,6 +79,22 @@ pub struct RouterMulticall;
 #[contractimpl]
 impl RouterMulticall {
     /// Initialize with admin and maximum batch size.
+    ///
+    /// Must be called exactly once. Sets the admin, the maximum number of calls
+    /// allowed per batch, and resets the total batch counter to zero.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `admin` - The address that will have admin privileges over this contract.
+    /// * `max_batch_size` - The maximum number of [`CallDescriptor`]s allowed in
+    ///   a single `execute_batch` call. Must be greater than zero.
+    ///
+    /// # Returns
+    /// `Ok(())` on success.
+    ///
+    /// # Errors
+    /// * [`MulticallError::AlreadyInitialized`] — if the contract has already been initialized.
+    /// * [`MulticallError::InvalidConfig`] — if `max_batch_size` is zero.
     pub fn initialize(env: Env, admin: Address, max_batch_size: u32) -> Result<(), MulticallError> {
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(MulticallError::AlreadyInitialized);
@@ -93,7 +109,27 @@ impl RouterMulticall {
     }
 
     /// Execute a batch of calls. Returns a summary of results.
-    /// If any `required` call fails, the whole batch is considered failed.
+    ///
+    /// Iterates over each [`CallDescriptor`] in `calls` and attempts a
+    /// cross-contract invocation. Tracks per-call success and failure. If a
+    /// call marked `required` fails, the entire batch is aborted and
+    /// [`MulticallError::RequiredCallFailed`] is returned. On completion,
+    /// increments the total batch counter.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `caller` - The address initiating the batch; must authenticate.
+    /// * `calls` - A list of [`CallDescriptor`]s describing each call to make.
+    ///   Must be non-empty and no larger than the configured `max_batch_size`.
+    ///
+    /// # Returns
+    /// A [`BatchSummary`] with the total, succeeded, and failed call counts.
+    ///
+    /// # Errors
+    /// * [`MulticallError::EmptyBatch`] — if `calls` is empty.
+    /// * [`MulticallError::BatchTooLarge`] — if `calls` exceeds `max_batch_size`.
+    /// * [`MulticallError::RequiredCallFailed`] — if a call with `required = true` fails.
+    /// * [`MulticallError::NotInitialized`] — if the contract has not been initialized.
     pub fn execute_batch(
         env: Env,
         caller: Address,
@@ -157,6 +193,22 @@ impl RouterMulticall {
     }
 
     /// Update the maximum batch size.
+    ///
+    /// Changes the upper limit on the number of calls allowed per batch.
+    /// Caller must be the admin.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `caller` - The address initiating the call; must be the admin.
+    /// * `max_batch_size` - The new maximum batch size. Must be greater than zero.
+    ///
+    /// # Returns
+    /// `Ok(())` on success.
+    ///
+    /// # Errors
+    /// * [`MulticallError::Unauthorized`] — if `caller` is not the admin.
+    /// * [`MulticallError::InvalidConfig`] — if `max_batch_size` is zero.
+    /// * [`MulticallError::NotInitialized`] — if the contract has not been initialized.
     pub fn set_max_batch_size(
         env: Env,
         caller: Address,
@@ -172,11 +224,29 @@ impl RouterMulticall {
     }
 
     /// Get total batches executed.
+    ///
+    /// Returns the cumulative count of successful `execute_batch`
+    /// invocations since the contract was initialized.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    ///
+    /// # Returns
+    /// The total number of batches that have been executed.
     pub fn total_batches(env: Env) -> u64 {
         env.storage().instance().get(&DataKey::TotalBatches).unwrap_or(0)
     }
 
     /// Get the max batch size.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    ///
+    /// # Returns
+    /// The maximum number of calls allowed per batch.
+    ///
+    /// # Errors
+    /// * [`MulticallError::NotInitialized`] — if the contract has not been initialized.
     pub fn max_batch_size(env: Env) -> Result<u32, MulticallError> {
         env.storage()
             .instance()

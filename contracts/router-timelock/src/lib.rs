@@ -62,6 +62,22 @@ pub struct RouterTimelock;
 #[contractimpl]
 impl RouterTimelock {
     /// Initialize with admin and minimum delay in seconds.
+    ///
+    /// Must be called exactly once. Sets the admin, the minimum required delay
+    /// for all queued operations, and initializes the operation ID counter.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `admin` - The address that will have admin privileges over this timelock.
+    /// * `min_delay` - The minimum number of seconds that must elapse between
+    ///   queuing and executing an operation. Must be greater than zero.
+    ///
+    /// # Returns
+    /// `Ok(())` on success.
+    ///
+    /// # Errors
+    /// * [`TimelockError::AlreadyInitialized`] — if the contract has already been initialized.
+    /// * [`TimelockError::InvalidDelay`] — if `min_delay` is zero.
     pub fn initialize(env: Env, admin: Address, min_delay: u64) -> Result<(), TimelockError> {
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(TimelockError::AlreadyInitialized);
@@ -76,6 +92,26 @@ impl RouterTimelock {
     }
 
     /// Queue a new operation. Returns the operation ID.
+    ///
+    /// Creates a new [`TimelockOp`] with an ETA of `current_timestamp + delay`.
+    /// The `delay` must be at least the configured `min_delay`. Caller must be
+    /// the admin.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `proposer` - The address proposing the operation; must be the admin.
+    /// * `description` - A human-readable description of the proposed change.
+    /// * `target` - The contract address that will be affected by the change.
+    /// * `delay` - Number of seconds to wait before the operation can execute.
+    ///   Must be >= the configured `min_delay`.
+    ///
+    /// # Returns
+    /// The `u64` operation ID assigned to the new operation.
+    ///
+    /// # Errors
+    /// * [`TimelockError::Unauthorized`] — if `proposer` is not the admin.
+    /// * [`TimelockError::InvalidDelay`] — if `delay` is less than `min_delay`.
+    /// * [`TimelockError::NotInitialized`] — if the contract has not been initialized.
     pub fn queue(
         env: Env,
         proposer: Address,
@@ -121,6 +157,25 @@ impl RouterTimelock {
     }
 
     /// Execute a queued operation after its delay has elapsed.
+    ///
+    /// Marks the operation as executed. The current ledger timestamp must be
+    /// >= the operation's ETA. The operation must not have been previously
+    /// executed or cancelled. Caller must be the admin.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `caller` - The address initiating the call; must be the admin.
+    /// * `op_id` - The ID of the operation to execute.
+    ///
+    /// # Returns
+    /// `Ok(())` on success.
+    ///
+    /// # Errors
+    /// * [`TimelockError::Unauthorized`] — if `caller` is not the admin.
+    /// * [`TimelockError::NotFound`] — if no operation with `op_id` exists.
+    /// * [`TimelockError::AlreadyExecuted`] — if the operation has already been executed.
+    /// * [`TimelockError::AlreadyCancelled`] — if the operation has been cancelled.
+    /// * [`TimelockError::TooEarly`] — if the current timestamp is before the operation's ETA.
     pub fn execute(env: Env, caller: Address, op_id: u64) -> Result<(), TimelockError> {
         caller.require_auth();
         Self::require_admin(&env, &caller)?;
@@ -148,6 +203,24 @@ impl RouterTimelock {
     }
 
     /// Cancel a queued operation before it executes.
+    ///
+    /// Marks the operation as cancelled, preventing future execution. The
+    /// operation must not have been previously executed or cancelled. Caller
+    /// must be the admin.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `caller` - The address initiating the call; must be the admin.
+    /// * `op_id` - The ID of the operation to cancel.
+    ///
+    /// # Returns
+    /// `Ok(())` on success.
+    ///
+    /// # Errors
+    /// * [`TimelockError::Unauthorized`] — if `caller` is not the admin.
+    /// * [`TimelockError::NotFound`] — if no operation with `op_id` exists.
+    /// * [`TimelockError::AlreadyExecuted`] — if the operation has already been executed.
+    /// * [`TimelockError::AlreadyCancelled`] — if the operation has already been cancelled.
     pub fn cancel(env: Env, caller: Address, op_id: u64) -> Result<(), TimelockError> {
         caller.require_auth();
         Self::require_admin(&env, &caller)?;
@@ -172,11 +245,27 @@ impl RouterTimelock {
     }
 
     /// Get an operation by ID.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `op_id` - The ID of the operation to retrieve.
+    ///
+    /// # Returns
+    /// `Some(`[`TimelockOp`]`)` if the operation exists, `None` otherwise.
     pub fn get_op(env: Env, op_id: u64) -> Option<TimelockOp> {
         env.storage().instance().get(&DataKey::Operation(op_id))
     }
 
     /// Get the minimum delay.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    ///
+    /// # Returns
+    /// The minimum delay in seconds that must be used when queuing operations.
+    ///
+    /// # Errors
+    /// * [`TimelockError::NotInitialized`] — if the contract has not been initialized.
     pub fn min_delay(env: Env) -> Result<u64, TimelockError> {
         env.storage()
             .instance()
@@ -185,6 +274,22 @@ impl RouterTimelock {
     }
 
     /// Update the minimum delay.
+    ///
+    /// Changes the minimum required delay for future queued operations. Does
+    /// not affect already-queued operations. Caller must be the admin.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `caller` - The address initiating the call; must be the admin.
+    /// * `new_delay` - The new minimum delay in seconds. Must be greater than zero.
+    ///
+    /// # Returns
+    /// `Ok(())` on success.
+    ///
+    /// # Errors
+    /// * [`TimelockError::Unauthorized`] — if `caller` is not the admin.
+    /// * [`TimelockError::InvalidDelay`] — if `new_delay` is zero.
+    /// * [`TimelockError::NotInitialized`] — if the contract has not been initialized.
     pub fn set_min_delay(env: Env, caller: Address, new_delay: u64) -> Result<(), TimelockError> {
         caller.require_auth();
         Self::require_admin(&env, &caller)?;

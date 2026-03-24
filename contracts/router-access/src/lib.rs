@@ -45,6 +45,19 @@ pub struct RouterAccess;
 #[contractimpl]
 impl RouterAccess {
     /// Initialize with a super-admin.
+    ///
+    /// Must be called exactly once before any other function. The `super_admin`
+    /// address gains full control over all roles and blacklisting.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `super_admin` - The address that will have super-admin privileges.
+    ///
+    /// # Returns
+    /// `Ok(())` on success.
+    ///
+    /// # Errors
+    /// * [`AccessError::AlreadyInitialized`] — if the contract has already been initialized.
     pub fn initialize(env: Env, super_admin: Address) -> Result<(), AccessError> {
         if env.storage().instance().has(&DataKey::SuperAdmin) {
             return Err(AccessError::AlreadyInitialized);
@@ -54,6 +67,24 @@ impl RouterAccess {
     }
 
     /// Grant a role to an address. Caller must be super-admin or role admin.
+    ///
+    /// Assigns `role` to `target`. The `target` must not already hold the role
+    /// and must not be blacklisted. The `caller` must be either the super-admin
+    /// or the designated admin for `role`.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `caller` - The address initiating the call; must be super-admin or role admin.
+    /// * `role` - The name of the role to grant.
+    /// * `target` - The address that will receive the role.
+    ///
+    /// # Returns
+    /// `Ok(())` on success.
+    ///
+    /// # Errors
+    /// * [`AccessError::Unauthorized`] — if `caller` is neither the super-admin nor the role admin.
+    /// * [`AccessError::AlreadyHasRole`] — if `target` already holds `role`.
+    /// * [`AccessError::Blacklisted`] — if `target` is blacklisted.
     pub fn grant_role(
         env: Env,
         caller: Address,
@@ -77,6 +108,22 @@ impl RouterAccess {
     }
 
     /// Revoke a role from an address.
+    ///
+    /// Removes `role` from `target`. The `target` must currently hold the role.
+    /// The `caller` must be either the super-admin or the designated admin for `role`.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `caller` - The address initiating the call; must be super-admin or role admin.
+    /// * `role` - The name of the role to revoke.
+    /// * `target` - The address whose role will be revoked.
+    ///
+    /// # Returns
+    /// `Ok(())` on success.
+    ///
+    /// # Errors
+    /// * [`AccessError::Unauthorized`] — if `caller` is neither the super-admin nor the role admin.
+    /// * [`AccessError::RoleNotFound`] — if `target` does not hold `role`.
     pub fn revoke_role(
         env: Env,
         caller: Address,
@@ -97,11 +144,35 @@ impl RouterAccess {
     }
 
     /// Check if an address has a role.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `role` - The name of the role to check.
+    /// * `target` - The address to check.
+    ///
+    /// # Returns
+    /// `true` if `target` holds `role`, `false` otherwise.
     pub fn has_role(env: Env, role: String, target: Address) -> bool {
         Self::has_role_internal(&env, &role, &target)
     }
 
     /// Set the admin for a specific role (who can grant/revoke it).
+    ///
+    /// Designates `admin` as the address allowed to grant and revoke `role`.
+    /// Only the super-admin can call this function.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `caller` - The address initiating the call; must be the super-admin.
+    /// * `role` - The name of the role whose admin is being set.
+    /// * `admin` - The address that will manage `role`.
+    ///
+    /// # Returns
+    /// `Ok(())` on success.
+    ///
+    /// # Errors
+    /// * [`AccessError::Unauthorized`] — if `caller` is not the super-admin.
+    /// * [`AccessError::NotInitialized`] — if the contract has not been initialized.
     pub fn set_role_admin(
         env: Env,
         caller: Address,
@@ -115,6 +186,23 @@ impl RouterAccess {
     }
 
     /// Blacklist an address — prevents it from being granted any role.
+    ///
+    /// Once blacklisted, `target` cannot be passed to `grant_role`.
+    /// The super-admin itself cannot be blacklisted. Only the super-admin can
+    /// call this function.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `caller` - The address initiating the call; must be the super-admin.
+    /// * `target` - The address to blacklist.
+    ///
+    /// # Returns
+    /// `Ok(())` on success.
+    ///
+    /// # Errors
+    /// * [`AccessError::Unauthorized`] — if `caller` is not the super-admin.
+    /// * [`AccessError::CannotBlacklistAdmin`] — if `target` is the super-admin.
+    /// * [`AccessError::NotInitialized`] — if the contract has not been initialized.
     pub fn blacklist(env: Env, caller: Address, target: Address) -> Result<(), AccessError> {
         caller.require_auth();
         Self::require_super_admin(&env, &caller)?;
@@ -134,6 +222,21 @@ impl RouterAccess {
     }
 
     /// Remove an address from the blacklist.
+    ///
+    /// Allows `target` to be granted roles again after being blacklisted.
+    /// Only the super-admin can call this function.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `caller` - The address initiating the call; must be the super-admin.
+    /// * `target` - The address to remove from the blacklist.
+    ///
+    /// # Returns
+    /// `Ok(())` on success.
+    ///
+    /// # Errors
+    /// * [`AccessError::Unauthorized`] — if `caller` is not the super-admin.
+    /// * [`AccessError::NotInitialized`] — if the contract has not been initialized.
     pub fn unblacklist(env: Env, caller: Address, target: Address) -> Result<(), AccessError> {
         caller.require_auth();
         Self::require_super_admin(&env, &caller)?;
@@ -142,11 +245,33 @@ impl RouterAccess {
     }
 
     /// Check if an address is blacklisted.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `target` - The address to check.
+    ///
+    /// # Returns
+    /// `true` if `target` is blacklisted, `false` otherwise.
     pub fn is_blacklisted(env: Env, target: Address) -> bool {
         Self::is_blacklisted_internal(&env, &target)
     }
 
     /// Transfer super-admin to a new address.
+    ///
+    /// Replaces the current super-admin with `new_admin`. The `current` address
+    /// must authenticate and must be the existing super-admin.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `current` - The current super-admin address; must authenticate.
+    /// * `new_admin` - The address that will become the new super-admin.
+    ///
+    /// # Returns
+    /// `Ok(())` on success.
+    ///
+    /// # Errors
+    /// * [`AccessError::Unauthorized`] — if `current` is not the super-admin.
+    /// * [`AccessError::NotInitialized`] — if the contract has not been initialized.
     pub fn transfer_super_admin(
         env: Env,
         current: Address,
@@ -159,6 +284,15 @@ impl RouterAccess {
     }
 
     /// Get current super-admin.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    ///
+    /// # Returns
+    /// The [`Address`] of the current super-admin.
+    ///
+    /// # Errors
+    /// * [`AccessError::NotInitialized`] — if the contract has not been initialized.
     pub fn super_admin(env: Env) -> Result<Address, AccessError> {
         env.storage()
             .instance()

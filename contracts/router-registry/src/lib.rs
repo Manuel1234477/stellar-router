@@ -61,6 +61,19 @@ pub struct RouterRegistry;
 #[contractimpl]
 impl RouterRegistry {
     /// Initialize the registry with an admin address.
+    ///
+    /// Must be called exactly once before any other function. Sets the admin
+    /// who controls all write operations on the registry.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `admin` - The address that will have admin privileges over this registry.
+    ///
+    /// # Returns
+    /// `Ok(())` on success.
+    ///
+    /// # Errors
+    /// * [`RegistryError::AlreadyInitialized`] — if the contract has already been initialized.
     pub fn initialize(env: Env, admin: Address) -> Result<(), RegistryError> {
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(RegistryError::AlreadyInitialized);
@@ -70,7 +83,27 @@ impl RouterRegistry {
     }
 
     /// Register a new contract entry.
-    /// Version must be greater than any existing version for this name.
+    ///
+    /// Stores a [`ContractEntry`] keyed by `(name, version)`. The `version`
+    /// must be greater than all previously registered versions for the same
+    /// `name` and must be non-zero. Caller must be the admin.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `caller` - The address initiating the call; must be the admin.
+    /// * `name` - A human-readable identifier for the contract.
+    /// * `address` - The contract address to register.
+    /// * `version` - A monotonically increasing version number (must be > 0 and
+    ///   greater than any existing version for `name`).
+    ///
+    /// # Returns
+    /// `Ok(())` on success.
+    ///
+    /// # Errors
+    /// * [`RegistryError::Unauthorized`] — if `caller` is not the admin.
+    /// * [`RegistryError::InvalidVersion`] — if `version` is 0 or not greater than all existing versions.
+    /// * [`RegistryError::AlreadyRegistered`] — if `(name, version)` is already registered.
+    /// * [`RegistryError::NotInitialized`] — if the contract has not been initialized.
     pub fn register(
         env: Env,
         caller: Address,
@@ -116,6 +149,17 @@ impl RouterRegistry {
     }
 
     /// Look up a contract by name and specific version.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `name` - The human-readable name of the contract.
+    /// * `version` - The exact version number to retrieve.
+    ///
+    /// # Returns
+    /// The [`ContractEntry`] for `(name, version)`.
+    ///
+    /// # Errors
+    /// * [`RegistryError::NotFound`] — if no entry exists for `(name, version)`.
     pub fn get(env: Env, name: String, version: u32) -> Result<ContractEntry, RegistryError> {
         env.storage()
             .instance()
@@ -124,6 +168,19 @@ impl RouterRegistry {
     }
 
     /// Get the latest (highest version) non-deprecated entry for a name.
+    ///
+    /// Iterates registered versions in descending order and returns the first
+    /// entry that has not been deprecated.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `name` - The human-readable name of the contract.
+    ///
+    /// # Returns
+    /// The most recent non-deprecated [`ContractEntry`] for `name`.
+    ///
+    /// # Errors
+    /// * [`RegistryError::NotFound`] — if no non-deprecated entry exists for `name`.
     pub fn get_latest(env: Env, name: String) -> Result<ContractEntry, RegistryError> {
         let versions = Self::get_versions_list(&env, &name);
         // Iterate in reverse to find latest non-deprecated
@@ -145,6 +202,24 @@ impl RouterRegistry {
     }
 
     /// Deprecate a specific version of a contract.
+    ///
+    /// Marks the entry for `(name, version)` as deprecated so it will be
+    /// skipped by `get_latest`. Caller must be the admin.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `caller` - The address initiating the call; must be the admin.
+    /// * `name` - The human-readable name of the contract.
+    /// * `version` - The version number to deprecate.
+    ///
+    /// # Returns
+    /// `Ok(())` on success.
+    ///
+    /// # Errors
+    /// * [`RegistryError::Unauthorized`] — if `caller` is not the admin.
+    /// * [`RegistryError::NotFound`] — if no entry exists for `(name, version)`.
+    /// * [`RegistryError::AlreadyDeprecated`] — if the entry is already deprecated.
+    /// * [`RegistryError::NotInitialized`] — if the contract has not been initialized.
     pub fn deprecate(
         env: Env,
         caller: Address,
@@ -170,6 +245,21 @@ impl RouterRegistry {
     }
 
     /// Transfer admin to a new address.
+    ///
+    /// Replaces the current admin with `new_admin`. The `current` address must
+    /// authenticate and must be the existing admin.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `current` - The current admin address; must authenticate.
+    /// * `new_admin` - The address that will become the new admin.
+    ///
+    /// # Returns
+    /// `Ok(())` on success.
+    ///
+    /// # Errors
+    /// * [`RegistryError::Unauthorized`] — if `current` is not the admin.
+    /// * [`RegistryError::NotInitialized`] — if the contract has not been initialized.
     pub fn transfer_admin(env: Env, current: Address, new_admin: Address) -> Result<(), RegistryError> {
         current.require_auth();
         Self::require_admin(&env, &current)?;
@@ -178,6 +268,15 @@ impl RouterRegistry {
     }
 
     /// Get the current admin.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    ///
+    /// # Returns
+    /// The [`Address`] of the current admin.
+    ///
+    /// # Errors
+    /// * [`RegistryError::NotInitialized`] — if the contract has not been initialized.
     pub fn admin(env: Env) -> Result<Address, RegistryError> {
         env.storage()
             .instance()
@@ -186,6 +285,17 @@ impl RouterRegistry {
     }
 
     /// Get all registered versions for a name.
+    ///
+    /// Returns the list of version numbers that have been registered under
+    /// `name`, in the order they were registered (ascending).
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `name` - The human-readable name of the contract.
+    ///
+    /// # Returns
+    /// A [`Vec<u32>`] of version numbers. Returns an empty vector if `name`
+    /// has no registered versions.
     pub fn versions(env: Env, name: String) -> Vec<u32> {
         Self::get_versions_list(&env, &name)
     }
