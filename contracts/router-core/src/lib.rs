@@ -301,7 +301,13 @@ impl RouterCore {
             .ok_or(RouterError::RouteNotFound)?;
 
         entry.paused = paused;
-        env.storage().instance().set(&DataKey::Route(name), &entry);
+        env.storage().instance().set(&DataKey::Route(name.clone()), &entry);
+
+        env.events().publish(
+            (Symbol::new(&env, "route_paused"),),
+            (name.clone(), paused),
+        );
+
         Ok(())
     }
 
@@ -326,6 +332,12 @@ impl RouterCore {
         caller.require_auth();
         Self::require_admin(&env, &caller)?;
         env.storage().instance().set(&DataKey::Paused, &paused);
+
+        env.events().publish(
+            (Symbol::new(&env, "router_paused"),),
+            paused,
+        );
+
         Ok(())
     }
 
@@ -419,7 +431,7 @@ impl RouterCore {
 mod tests {
     extern crate std;
     use super::*;
-    use soroban_sdk::{testutils::Address as _, Env, String};
+    use soroban_sdk::{testutils::{Address as _, Events}, Env, String};
 
     fn setup() -> (Env, Address, RouterCoreClient<'static>) {
         let env = Env::default();
@@ -512,5 +524,32 @@ mod tests {
         let new_admin = Address::generate(&env);
         client.transfer_admin(&admin, &new_admin);
         assert_eq!(client.admin(), new_admin);
+    }
+
+    #[test]
+    fn test_set_route_paused_emits_event() {
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "oracle");
+        let addr = Address::generate(&env);
+        client.register_route(&admin, &name, &addr);
+        
+        let events_before = env.events().all().len();
+        client.set_route_paused(&admin, &name, &true);
+        let events_after = env.events().all().len();
+        
+        // Verify an event was emitted
+        assert_eq!(events_after, events_before + 1);
+    }
+
+    #[test]
+    fn test_set_paused_emits_event() {
+        let (env, admin, client) = setup();
+        
+        let events_before = env.events().all().len();
+        client.set_paused(&admin, &true);
+        let events_after = env.events().all().len();
+        
+        // Verify an event was emitted
+        assert_eq!(events_after, events_before + 1);
     }
 }
