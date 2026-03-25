@@ -14,7 +14,7 @@
 
 use soroban_sdk::{
     contract, contractimpl, contracttype, contracterror,
-    Address, Env, String, Symbol,
+    Address, Env, String, Symbol, Vec,
 };
 
 // ── Storage Keys ──────────────────────────────────────────────────────────────
@@ -398,6 +398,27 @@ impl RouterCore {
         Ok(())
     }
 
+/// Returns all currently registered route names as a vector of strings.
+    /// This is a read-only operation that scans all instance storage keys.
+    /// The order of returned names is not guaranteed.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    ///
+    /// # Returns
+    /// A `Vec<String>` containing all registered route names.
+    pub fn get_all_routes(env: Env) -> Vec<String> {
+        let mut routes = Vec::new(&env);
+        let mut iter = env.storage().instance().iter();
+        while let Some(kv) = iter.next() {
+            let (key, _) = kv.unwrap();
+            if let DataKey::Route(name) = key {
+                routes.append(name);
+            }
+        }
+        routes
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     fn require_admin(env: &Env, caller: &Address) -> Result<(), RouterError> {
@@ -512,5 +533,27 @@ mod tests {
         let new_admin = Address::generate(&env);
         client.transfer_admin(&admin, &new_admin);
         assert_eq!(client.admin(), new_admin);
+    }
+
+    #[test]
+    fn test_get_all_routes_empty() {
+        let (env, _, client) = setup();
+        let routes: Vec<String> = client.get_all_routes();
+        assert!(routes.is_empty());
+    }
+
+    #[test]
+    fn test_get_all_routes_multiple() {
+        let (env, admin, client) = setup();
+        let oracle = String::from_str(&env, "oracle");
+        let vault = String::from_str(&env, "vault");
+        let addr1 = Address::generate(&env);
+        let addr2 = Address::generate(&env);
+        client.register_route(&admin, &oracle, &addr1);
+        client.register_route(&admin, &vault, &addr2);
+        let routes: Vec<String> = client.get_all_routes();
+        assert_eq!(routes.len(), 2);
+        assert!(routes.contains(&oracle));
+        assert!(routes.contains(&vault));
     }
 }
