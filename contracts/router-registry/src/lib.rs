@@ -434,4 +434,33 @@ mod tests {
         client.transfer_admin(&admin, &new_admin);
         assert_eq!(client.admin(), new_admin);
     }
+
+    #[test]
+    fn test_register_higher_after_deprecation_succeeds() {
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "oracle");
+        let addr = Address::generate(&env);
+        client.register(&admin, &name, &addr, &1);
+        client.deprecate(&admin, &name, &1);
+        
+        // Registering a higher version after deprecation should succeed
+        client.register(&admin, &name, &addr, &2);
+        let latest = client.get_latest(&name);
+        assert_eq!(latest.version, 2);
+    }
+
+    #[test]
+    fn test_get_latest_all_deprecated_fails() {
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "oracle");
+        let addr = Address::generate(&env);
+        client.register(&admin, &name, &addr, &1);
+        client.register(&admin, &name, &addr, &2);
+        client.deprecate(&admin, &name, &1);
+        client.deprecate(&admin, &name, &2);
+        
+        // When all versions are deprecated, get_latest should return NotFound
+        let result = client.try_get_latest(&name);
+        assert_eq!(result, Err(Ok(RegistryError::NotFound)));
+    }
 }
