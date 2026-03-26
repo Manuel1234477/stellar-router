@@ -261,6 +261,46 @@ impl RouterMulticall {
             .ok_or(MulticallError::NotInitialized)
     }
 
+    /// Get current admin.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    ///
+    /// # Returns
+    /// The [`Address`] of the current admin.
+    ///
+    /// # Errors
+    /// * [`MulticallError::NotInitialized`] — if the contract has not been initialized.
+    pub fn admin(env: Env) -> Result<Address, MulticallError> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(MulticallError::NotInitialized)
+    }
+
+    /// Transfer admin to a new address.
+    ///
+    /// Replaces the current admin with `new_admin`. The `current` address must
+    /// authenticate and must be the existing admin.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `current` - The current admin address; must authenticate.
+    /// * `new_admin` - The address that will become the new admin.
+    ///
+    /// # Returns
+    /// `Ok(())` on success.
+    ///
+    /// # Errors
+    /// * [`MulticallError::Unauthorized`] — if `current` is not the admin.
+    /// * [`MulticallError::NotInitialized`] — if the contract has not been initialized.
+    pub fn transfer_admin(env: Env, current: Address, new_admin: Address) -> Result<(), MulticallError> {
+        current.require_auth();
+        Self::require_admin(&env, &current)?;
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        Ok(())
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     fn require_admin(env: &Env, caller: &Address) -> Result<(), MulticallError> {
@@ -459,5 +499,29 @@ mod tests {
         assert_eq!(result, Err(Ok(MulticallError::RequiredCallFailed)));
         // Total batches should NOT increment if it failed
         assert_eq!(client.total_batches(), 0);
+    }
+
+    #[test]
+    fn test_admin_getter() {
+        let (env, admin, client) = setup();
+        let retrieved_admin = client.admin();
+        assert_eq!(retrieved_admin, admin);
+    }
+
+    #[test]
+    fn test_transfer_admin() {
+        let (env, admin, client) = setup();
+        let new_admin = Address::generate(&env);
+        client.transfer_admin(&admin, &new_admin);
+        assert_eq!(client.admin(), new_admin);
+    }
+
+    #[test]
+    fn test_unauthorized_transfer_admin_fails() {
+        let (env, _admin, client) = setup();
+        let attacker = Address::generate(&env);
+        let new_admin = Address::generate(&env);
+        let result = client.try_transfer_admin(&attacker, &new_admin);
+        assert_eq!(result, Err(Ok(MulticallError::Unauthorized)));
     }
 }
