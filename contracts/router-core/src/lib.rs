@@ -149,7 +149,9 @@ impl RouterCore {
     /// Update an existing route to point to a new address.
     ///
     /// Replaces the contract address for an existing route. The route must
-    /// already exist. Caller must be the admin.
+    /// already exist. Caller must be the admin. Emits both a `route_updated`
+    /// event and a `route_overwritten` event carrying the old and new addresses
+    /// so that off-chain observers can detect unintended redirections.
     ///
     /// # Arguments
     /// * `env` - The Soroban environment.
@@ -179,13 +181,19 @@ impl RouterCore {
             .get(&DataKey::Route(name.clone()))
             .ok_or(RouterError::RouteNotFound)?;
 
-        entry.address = new_address;
+        let old_address = entry.address.clone();
+        entry.address = new_address.clone();
         entry.updated_by = caller;
         env.storage().instance().set(&DataKey::Route(name.clone()), &entry);
 
         env.events().publish(
             (Symbol::new(&env, "route_updated"),),
             name.clone(),
+        );
+
+        env.events().publish(
+            (Symbol::new(&env, "route_overwritten"),),
+            (name.clone(), old_address, new_address),
         );
 
         Ok(())
@@ -800,6 +808,32 @@ mod tests {
         assert_eq!(client.try_resolve(&name), Err(Ok(RouterError::RouterPaused)));
         client.set_paused(&admin, &false);
         assert_eq!(client.resolve(&name), addr);
+    }
+
+    #[test]
+    fn test_update_route_emits_overwritten_event() {
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "oracle");
+        let addr1 = Address::generate(&env);
+        let addr2 = Address::generate(&env);
+        client.register_route(&admin, &name, &addr1);
+
+        let events_before = env.events().all().len();
+        client.update_route(&admin, &name, &addr2);
+        let events_after = env.events().all().len();
+
+        // Two events: route_updated + route_overwritten
+        assert_eq!(events_after, events_before + 2);
+
+        // Verify route_overwritten event carries old and new addresses
+        let overwrite_event = env.events().all().last().unwrap().clone();
+        assert_eq!(overwrite_event.0, client.address);
+        assert_eq!(
+            overwrite_event.1,
+            vec![&env, Symbol::new(&env, "route_overwritten").into_val(&env)]
+        );
+        let expected_data: Val = (name, addr1, addr2).into_val(&env);
+        assert_eq!(overwrite_event.2, expected_data);
     }
 
     #[test]
