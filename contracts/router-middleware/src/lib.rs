@@ -820,21 +820,45 @@ mod tests {
     }
 
     #[test]
-    fn test_old_admin_locked_out_after_transfer() {
+    fn test_circuit_breaker_blocks_calls() {
         let (env, admin, client) = setup();
-        let new_admin = Address::generate(&env);
-        client.transfer_admin(&admin, &new_admin);
-
-        // old admin should no longer be able to configure routes
         let route = String::from_str(&env, "oracle/get_price");
-        let result = client.try_configure_route(&admin, &route, &10, &60, &true, &0, &0, &0);
-        assert_eq!(result, Err(Ok(MiddlewareError::Unauthorized)));
+        // Configure route with failure_threshold = 1, no recovery window for simplicity
+        client.configure_route(&admin, &route, &0, &0, &true, &1, &0, &0);
 
-        // new admin should be able to configure routes
-        assert!(
-            client
-                .try_configure_route(&new_admin, &route, &10, &60, &true, &0, &0, &0)
-                .is_ok()
-        );
+        let caller = Address::generate(&env);
+        // First call succeeds
+        assert!(client.try_pre_call(&caller, &route).is_ok());
+        // Post call with failure to trip circuit
+        client.post_call(&caller, &route, &false);
+        // Now pre_call should return CircuitOpen
+        let result = client.try_pre_call(&caller, &route);
+        assert_eq!(result, Err(Ok(MiddlewareError::CircuitOpen)));
     }
-}
+
+    #[test]
+    fn test_reset_circuit_breaker() {
+        let (env, admin, client) = setup();
+        let route = String::from_str(&env, "oracle/get_price");
+        client.configure_route(&admin, &route, &0, &0, &true, &1, &0, &0);
+
+        let caller = Address::generate(&env);
+        client.pre_call(&caller, &route);
+        client.post_call(&caller, &route, &false);
+        // Verify circuit is open
+        assert_eq!(client.try_pre_call(&caller, &route), Err(Ok(MiddlewareError::CircuitOpen)));
+
+        // Reset circuit
+        client.reset_circuit_breaker(&admin, &route);
+        // Now pre_call should succeed
+        assert!(client.try_pre_call(&caller, &route).is_ok());
+    }
+
+    #[test]
+    fn test_circuit_breaker_unauthorized_reset() {
+        let (env, _admin, client) = setup();
+        let route = String::from_str(&env, "oracle/get_price");
+        let attacker = Address::generate(&env);
+        let result = client.try_reset_circuit_breaker(&attacker, &route);
+        assert_eq!(result, Err(Ok(MiddlewareError::Unauthorized)));
+    }

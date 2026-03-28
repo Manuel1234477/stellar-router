@@ -69,6 +69,7 @@ pub enum RouterError {
     RoutePaused = 5,
     RouterPaused = 6,
     RouteAlreadyExists = 7,
+    InvalidRouteName = 8,
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -133,7 +134,7 @@ impl RouterCore {
         Self::require_admin(&env, &caller)?;
 
         if Self::is_empty_or_whitespace(&name) {
-            return Err(RouterError::RouteNotFound);
+            return Err(RouterError::InvalidRouteName);
         }
 
         if env.storage().instance().has(&DataKey::Route(name.clone())) {
@@ -673,7 +674,16 @@ impl RouterCore {
     }
 
     fn is_empty_or_whitespace(name: &String) -> bool {
-        name.len() == 0
+        if name.len() == 0 {
+            return true;
+        }
+        let bytes = name.clone().to_bytes();
+        for i in 0..bytes.len() {
+            if bytes.get_unchecked(i) != 32 { // space
+                return false;
+            }
+        }
+        true
     }
 }
 
@@ -976,18 +986,16 @@ mod tests {
         let empty_name = String::from_str(&env, "");
         let addr = Address::generate(&env);
         let result = client.try_register_route(&admin, &empty_name, &addr);
-        assert_eq!(result, Err(Ok(RouterError::RouteNotFound)));
+        assert_eq!(result, Err(Ok(RouterError::InvalidRouteName)));
     }
 
     #[test]
-    fn test_register_whitespace_route_name_succeeds() {
+    fn test_register_whitespace_route_name_fails() {
         let (env, admin, client) = setup();
         let whitespace_name = String::from_str(&env, "   ");
         let addr = Address::generate(&env);
-        // Soroban strings don't support byte iteration, so whitespace-only names
-        // are treated as valid non-empty names.
         let result = client.try_register_route(&admin, &whitespace_name, &addr);
-        assert!(result.is_ok());
+        assert_eq!(result, Err(Ok(RouterError::InvalidRouteName)));
     }
 
     #[test]
@@ -1046,6 +1054,7 @@ mod tests {
         assert_eq!(result, Err(Ok(RouterError::RouterPaused)));
     }
 
+    #[test]
     #[test]
     fn test_pause_all_checked_before_route_lookup() {
         let (env, admin, client) = setup();

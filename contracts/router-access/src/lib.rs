@@ -213,6 +213,30 @@ impl RouterAccess {
         Self::has_role_internal(&env, &role, &target)
     }
 
+    /// Check if a role has expired for an address.
+    ///
+    /// Returns true if the role expiry timestamp exists and is less than or equal
+    /// to the current ledger timestamp.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `role` - The name of the role.
+    /// * `target` - The address to check.
+    ///
+    /// # Returns
+    /// `true` if the role has expired, `false` otherwise.
+    pub fn is_role_expired(env: Env, role: String, target: Address) -> bool {
+        if let Some(expires_at) = env.storage()
+            .instance()
+            .get::<DataKey, u64>(&DataKey::RoleExpiry(role, target))
+        {
+            let current_timestamp = env.ledger().timestamp();
+            current_timestamp >= expires_at
+        } else {
+            false
+        }
+    }
+
     /// Set the admin for a specific role (who can grant/revoke it).
     ///
     /// Designates `admin` as the address allowed to grant and revoke `role`.
@@ -475,8 +499,8 @@ impl RouterAccess {
             .instance()
             .get::<DataKey, u64>(&DataKey::RoleExpiry(role.clone(), target.clone()))
         {
-            let current_ledger = env.ledger().sequence();
-            if current_ledger >= expires_at {
+            let current_timestamp = env.ledger().timestamp();
+            if current_timestamp >= expires_at {
                 return false;
             }
         }
@@ -839,6 +863,41 @@ mod tests {
         // but the role itself remains granted
         assert!(client.has_role(&role, &user));
     }
+
+    #[test]
+    fn test_is_role_expired_no_expiry() {
+        let (env, admin, client) = setup();
+        let role = String::from_str(&env, "operator");
+        let user = Address::generate(&env);
+
+        client.grant_role(&admin, &role, &user, &None);
+        assert!(!client.is_role_expired(&role, &user));
+    }
+
+    #[test]
+    fn test_is_role_expired_future_expiry() {
+        let (env, admin, client) = setup();
+        let role = String::from_str(&env, "operator");
+        let user = Address::generate(&env);
+        let future_timestamp = 1000u64;
+
+        client.grant_role(&admin, &role, &user, &Some(future_timestamp));
+        assert!(!client.is_role_expired(&role, &user));
+        assert!(client.has_role(&role, &user));
+    }
+
+    #[test]
+    fn test_is_role_expired_past_expiry() {
+        let (env, admin, client) = setup();
+        let role = String::from_str(&env, "operator");
+        let user = Address::generate(&env);
+        let past_timestamp = 1u64;
+
+        client.grant_role(&admin, &role, &user, &Some(past_timestamp));
+        assert!(client.is_role_expired(&role, &user));
+        assert!(!client.has_role(&role, &user));
+    }
+}
     fn test_blacklisted_address_cannot_use_role() {
         // Blacklisting an address should prevent it from using its roles
         let (env, admin, client) = setup();
