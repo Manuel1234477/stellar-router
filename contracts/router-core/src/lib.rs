@@ -810,6 +810,74 @@ mod tests {
     }
 
     #[test]
+    fn test_get_all_routes_updates_after_remove() {
+        let (env, admin, client) = setup();
+        let oracle = String::from_str(&env, "oracle");
+        let vault = String::from_str(&env, "vault");
+        let addr1 = Address::generate(&env);
+        let addr2 = Address::generate(&env);
+
+        client.register_route(&admin, &oracle, &addr1);
+        client.register_route(&admin, &vault, &addr2);
+        assert_eq!(client.get_all_routes().len(), 2);
+
+        client.remove_route(&admin, &oracle);
+        let routes = client.get_all_routes();
+        assert_eq!(routes.len(), 1);
+        assert!(!routes.contains(&oracle));
+        assert!(routes.contains(&vault));
+    }
+
+    #[test]
+    fn test_get_all_routes_re_register_after_remove() {
+        let (env, admin, client) = setup();
+        let oracle = String::from_str(&env, "oracle");
+        let addr1 = Address::generate(&env);
+        let addr2 = Address::generate(&env);
+
+        client.register_route(&admin, &oracle, &addr1);
+        assert_eq!(client.get_all_routes().len(), 1);
+
+        client.remove_route(&admin, &oracle);
+        assert_eq!(client.get_all_routes().len(), 0);
+
+        client.register_route(&admin, &oracle, &addr2);
+        let routes = client.get_all_routes();
+        assert_eq!(routes.len(), 1);
+        assert!(routes.contains(&oracle));
+    }
+
+    #[test]
+    fn test_pause_all_blocks_new_resolutions() {
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "oracle");
+        let addr = Address::generate(&env);
+        client.register_route(&admin, &name, &addr);
+        
+        // Verify resolve works before pause
+        assert_eq!(client.resolve(&name), addr);
+        
+        // Pause the router
+        client.set_paused(&admin, &true);
+        
+        // Verify resolve fails after pause
+        let result = client.try_resolve(&name);
+        assert_eq!(result, Err(Ok(RouterError::RouterPaused)));
+    }
+
+    #[test]
+    fn test_pause_all_checked_before_route_lookup() {
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "oracle");
+        let addr = Address::generate(&env);
+        client.register_route(&admin, &name, &addr);
+        
+        // Pause the router
+        client.set_paused(&admin, &true);
+        
+        // Even with a valid route, resolve should fail with RouterPaused, not RouteNotFound
+        let result = client.try_resolve(&name);
+        assert_eq!(result, Err(Ok(RouterError::RouterPaused)));
     fn test_add_alias_resolves_to_original() {
         let (env, admin, client) = setup();
         let name = String::from_str(&env, "oracle");

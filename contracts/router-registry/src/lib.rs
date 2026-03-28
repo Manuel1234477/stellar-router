@@ -190,7 +190,7 @@ impl RouterRegistry {
         let mut i = len;
         while i > 0 {
             i -= 1;
-            let v = versions.get(i).unwrap();
+            let v = versions.get(i).ok_or(RegistryError::NotFound)?;
             let entry: ContractEntry = env
                 .storage()
                 .instance()
