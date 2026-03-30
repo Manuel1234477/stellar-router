@@ -24,6 +24,7 @@ pub enum DataKey {
     TotalCalls,
     CircuitBreaker(String),     // route_name -> CircuitBreakerState
     CallLog(String),            // route_name -> Vec<CallLogEntry>
+    ConfiguredRoutes,           // Vec<String>
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -172,7 +173,16 @@ impl RouterMiddleware {
             recovery_window_seconds,
             log_retention,
         };
-        env.storage().instance().set(&DataKey::RouteConfig(route), &config);
+        env.storage().instance().set(&DataKey::RouteConfig(route.clone()), &config);
+
+        let mut configured: Vec<String> = env.storage().instance()
+            .get(&DataKey::ConfiguredRoutes)
+            .unwrap_or_else(|| Vec::new(&env));
+        if !configured.contains(&route) {
+            configured.push_back(route.clone());
+            env.storage().instance().set(&DataKey::ConfiguredRoutes, &configured);
+        }
+
         Ok(())
     }
 
@@ -518,6 +528,34 @@ impl RouterMiddleware {
     /// `Some(`[`RouteConfig`]`)` if a config exists for `route`, `None` otherwise.
     pub fn route_config(env: Env, route: String) -> Option<RouteConfig> {
         env.storage().instance().get(&DataKey::RouteConfig(route))
+    }
+
+    /// Returns all route names that have been configured via configure_route.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    ///
+    /// # Returns
+    /// A `Vec<String>` of unique route names passed to `configure_route`.
+    pub fn get_configured_routes(env: Env) -> Vec<String> {
+        env.storage().instance()
+            .get(&DataKey::ConfiguredRoutes)
+            .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    /// Get the current circuit breaker state for a route.
+    ///
+    /// Returns `None` if no circuit breaker state has been recorded for the route
+    /// (i.e. no failures have occurred since initialization or last reset).
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `route` - The route name to query.
+    ///
+    /// # Returns
+    /// `Some(CircuitBreakerState)` if state exists, `None` otherwise.
+    pub fn circuit_breaker_state(env: Env, route: String) -> Option<CircuitBreakerState> {
+        env.storage().instance().get(&DataKey::CircuitBreaker(route))
     }
 
     /// Get current admin.
@@ -958,5 +996,85 @@ mod tests {
             client.try_pre_call(&caller, &route),
             Err(Ok(MiddlewareError::CircuitOpen))
         );
+    }
+
+    // ── Issue #150: get_configured_routes ────────────────────────────────────
+
+    #[test]
+    fn test_get_configured_routes_empty() {
+        let (_env, _admin, client) = setup();
+        let routes = client.get_configured_routes();
+        assert!(routes.is_empty());
+    }
+
+    #[test]
+    fn test_get_configured_routes_multiple() {
+        let (env, admin, client) = setup();
+        let route_a = String::from_str(&env, "oracle/price");
+        let route_b = String::from_str(&env, "vault/deposit");
+        client.configure_route(&admin, &route_a, &0, &0, &true, &0, &0, &0);
+        client.configure_route(&admin, &route_b, &0, &0, &true, &0, &0, &0);
+        let routes = client.get_configured_routes();
+        assert_eq!(routes.len(), 2);
+        assert!(routes.contains(&route_a));
+        assert!(routes.contains(&route_b));
+    }
+
+    #[test]
+    fn test_get_configured_routes_no_duplicates() {
+        let (env, admin, client) = setup();
+        let route = String::from_str(&env, "oracle/price");
+        client.configure_route(&admin, &route, &0, &0, &true, &0, &0, &0);
+        client.configure_route(&admin, &route, &5, &60, &true, &0, &0, &0);
+        let routes = client.get_configured_routes();
+        assert_eq!(routes.len(), 1);
+    }
+
+    // ── Issue #155: circuit_breaker_state getter ──────────────────────────────
+
+    #[test]
+    fn test_circuit_breaker_state_none_before_failures() {
+        let (env, admin, client) = setup();
+        let route = String::from_str(&env, "oracle/get_price");
+        client.configure_route(&admin, &route, &0, &0, &true, &3, &0, &0);
+        assert_eq!(client.circuit_breaker_state(&route), None);
+    }
+
+    #[test]
+    fn test_circuit_breaker_state_reflects_failures() {
+        let (env, admin, client) = setup();
+        let route = String::from_str(&env, "oracle/get_price");
+        client.configure_route(&admin, &route, &0, &0, &true, &3, &0, &0);
+        let caller = Address::generate(&env);
+        client.post_call(&caller, &route, &false);
+        let state = client.circuit_breaker_state(&route).unwrap();
+        assert_eq!(state.failure_count, 1);
+        assert!(!state.is_open);
+    }
+
+    #[test]
+    fn test_circuit_breaker_state_open_after_threshold() {
+        let (env, admin, client) = setup();
+        let route = String::from_str(&env, "oracle/get_price");
+        client.configure_route(&admin, &route, &0, &0, &true, &2, &0, &0);
+        let caller = Address::generate(&env);
+        client.post_call(&caller, &route, &false);
+        client.post_call(&caller, &route, &false);
+        let state = client.circuit_breaker_state(&route).unwrap();
+        assert!(state.is_open);
+        assert!(state.opened_at > 0);
+    }
+
+    #[test]
+    fn test_circuit_breaker_state_clears_after_reset() {
+        let (env, admin, client) = setup();
+        let route = String::from_str(&env, "oracle/get_price");
+        client.configure_route(&admin, &route, &0, &0, &true, &1, &0, &0);
+        let caller = Address::generate(&env);
+        client.post_call(&caller, &route, &false);
+        assert!(client.circuit_breaker_state(&route).unwrap().is_open);
+        client.reset_circuit_breaker(&admin, &route);
+        let state = client.circuit_breaker_state(&route).unwrap();
+        assert!(!state.is_open);
     }
 }

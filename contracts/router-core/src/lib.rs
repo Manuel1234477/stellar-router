@@ -169,8 +169,10 @@ impl RouterCore {
             .instance()
             .set(&DataKey::RouteNames, &route_names);
 
-        env.events()
-            .publish((Symbol::new(&env, "route_registered"),), name.clone());
+        env.events().publish(
+            (Symbol::new(&env, "route_registered"),),
+            (name.clone(), entry.address.clone()),
+        );
 
         Ok(())
     }
@@ -749,6 +751,20 @@ mod tests {
         let resolved = client.resolve(&name);
         assert_eq!(resolved, addr);
         assert_eq!(client.total_routed(), 1);
+
+        // Verify route_registered event carries both name and address
+        let events = env.events().all();
+        let reg_event = events.iter().find(|e| {
+            e.1.get(0)
+                .map(|v| {
+                    let s: Symbol = v.into_val(&env);
+                    s == Symbol::new(&env, "route_registered")
+                })
+                .unwrap_or(false)
+        }).unwrap();
+        let (emitted_name, emitted_addr): (String, Address) = reg_event.2.into_val(&env);
+        assert_eq!(emitted_name, name);
+        assert_eq!(emitted_addr, addr);
     }
 
     #[test]

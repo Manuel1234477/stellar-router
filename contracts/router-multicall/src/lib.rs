@@ -256,7 +256,14 @@ impl RouterMulticall {
         if max_batch_size == 0 {
             return Err(MulticallError::InvalidConfig);
         }
+        let old_max: u32 = env.storage().instance()
+            .get(&DataKey::MaxBatchSize)
+            .unwrap_or(0);
         env.storage().instance().set(&DataKey::MaxBatchSize, &max_batch_size);
+        env.events().publish(
+            (Symbol::new(&env, "max_batch_size_updated"),),
+            (old_max, max_batch_size),
+        );
         Ok(())
     }
 
@@ -410,6 +417,20 @@ mod tests {
         let (_env, admin, client) = setup();
         client.set_max_batch_size(&admin, &5);
         assert_eq!(client.max_batch_size(), 5);
+    }
+
+    #[test]
+    fn test_set_max_batch_size_emits_event() {
+        let (env, admin, client) = setup();
+        // initial max is 10 (from setup)
+        client.set_max_batch_size(&admin, &5);
+        let events = env.events().all();
+        let last = events.last().unwrap();
+        let topic: Symbol = last.1.get(0).unwrap().into_val(&env);
+        assert_eq!(topic, Symbol::new(&env, "max_batch_size_updated"));
+        let (old, new): (u32, u32) = last.2.into_val(&env);
+        assert_eq!(old, 10);
+        assert_eq!(new, 5);
     }
 
     #[test]
