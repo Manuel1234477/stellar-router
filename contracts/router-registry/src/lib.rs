@@ -57,6 +57,7 @@ pub enum RegistryError {
     InvalidVersion = 7,
     VersionNotFound = 8,
     InvalidConstraint = 9,
+    AllVersionsDeprecated = 10,
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -213,6 +214,9 @@ impl RouterRegistry {
     /// * [`RegistryError::NotFound`] — if no non-deprecated entry exists for `name`.
     pub fn get_latest(env: Env, name: String) -> Result<ContractEntry, RegistryError> {
         let versions = Self::get_versions_list(&env, &name);
+        if versions.is_empty() {
+            return Err(RegistryError::NotFound);
+        }
         // Iterate in reverse to find latest non-deprecated
         let len = versions.len();
         let mut i = len;
@@ -228,7 +232,7 @@ impl RouterRegistry {
                 return Ok(entry);
             }
         }
-        Err(RegistryError::NotFound)
+        Err(RegistryError::AllVersionsDeprecated)
     }
 
     /// Get the latest non-deprecated entry matching a semver constraint.
@@ -270,7 +274,7 @@ impl RouterRegistry {
                     return Ok(entry);
                 }
             }
-            return Err(RegistryError::NotFound);
+            return Err(RegistryError::AllVersionsDeprecated);
         }
 
         let constraint_str = constraint.unwrap();
@@ -647,7 +651,7 @@ mod tests {
         client.register(&admin, &name, &addr, &1);
         client.deprecate(&admin, &name, &1);
         let result = client.try_get_latest(&name);
-        assert_eq!(result, Err(Ok(RegistryError::NotFound)));
+        assert_eq!(result, Err(Ok(RegistryError::AllVersionsDeprecated)));
     }
 
     #[test]
@@ -793,7 +797,7 @@ mod tests {
 
         // When all versions are deprecated, get_latest should return NotFound
         let result = client.try_get_latest(&name);
-        assert_eq!(result, Err(Ok(RegistryError::NotFound)));
+        assert_eq!(result, Err(Ok(RegistryError::AllVersionsDeprecated)));
     }
 
     #[test]
@@ -876,7 +880,7 @@ mod tests {
         let constraint = String::from_str(&env, "2");
         let result = client.try_get_latest_with_constraint(&name, &Some(constraint));
         assert!(result.is_ok());
-        let entry = result.unwrap();
+        let entry = result.unwrap().unwrap();
         assert_eq!(entry.version, 2);
     }
 
@@ -896,7 +900,7 @@ mod tests {
         let constraint = String::from_str(&env, ">=2");
         let result = client.try_get_latest_with_constraint(&name, &Some(constraint));
         assert!(result.is_ok());
-        let entry = result.unwrap();
+        let entry = result.unwrap().unwrap();
         assert_eq!(entry.version, 3);
     }
 
@@ -916,7 +920,7 @@ mod tests {
         let constraint = String::from_str(&env, "<3");
         let result = client.try_get_latest_with_constraint(&name, &Some(constraint));
         assert!(result.is_ok());
-        let entry = result.unwrap();
+        let entry = result.unwrap().unwrap();
         assert_eq!(entry.version, 2);
     }
 
@@ -936,7 +940,7 @@ mod tests {
         let constraint = String::from_str(&env, "^2");
         let result = client.try_get_latest_with_constraint(&name, &Some(constraint));
         assert!(result.is_ok());
-        let entry = result.unwrap();
+        let entry = result.unwrap().unwrap();
         assert_eq!(entry.version, 2);
     }
 
@@ -970,7 +974,7 @@ mod tests {
         let constraint = String::from_str(&env, ">=2");
         let result = client.try_get_latest_with_constraint(&name, &Some(constraint));
         assert!(result.is_ok());
-        let entry = result.unwrap();
+        let entry = result.unwrap().unwrap();
         assert_eq!(entry.version, 2);
     }
 
