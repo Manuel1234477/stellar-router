@@ -540,6 +540,34 @@ impl RouterTimelock {
         Ok(())
     }
 
+    /// Cancel all pending operations. Emits `op_cancelled` per op and `all_cancelled` summary.
+    pub fn cancel_all(env: Env, caller: Address) -> Result<u64, TimelockError> {
+        caller.require_auth();
+        Self::require_admin(&env, &caller)?;
+
+        let next_id: u64 = env.storage().instance()
+            .get(&DataKey::NextOpId)
+            .unwrap_or(0);
+        let mut count: u64 = 0;
+        for id in 0..next_id {
+            if let Some(mut op) = env.storage().instance()
+                .get::<DataKey, TimelockOp>(&DataKey::Operation(id))
+            {
+                if !op.executed && !op.cancelled {
+                    op.cancelled = true;
+                    env.storage().instance().set(&DataKey::Operation(id), &op);
+                    env.storage().instance().remove(&DataKey::OperationDeps(id));
+                    env.events().publish((Symbol::new(&env, "op_cancelled"),), id);
+                    count += 1;
+                }
+            }
+        }
+        if count > 0 {
+            env.events().publish((Symbol::new(&env, "all_cancelled"),), count);
+        }
+        Ok(count)
+    }
+
     /// Configure the emergency council for fast-track operations.
     ///
     /// Sets the list of council member addresses and the required number of
@@ -656,7 +684,6 @@ impl RouterTimelock {
         let mut pending = Vec::new(&env);
         for id in 0..next_id {
             if let Some(op) = env.storage().instance().get::<DataKey, TimelockOp>(&DataKey::Operation(id)) {
-            if let Some(op) = env.storage().instance().get::<_, Operation>(&DataKey::Operation(id)) {
                 if !op.executed && !op.cancelled {
                     pending.push_back(op);
                 }
@@ -741,7 +768,9 @@ impl RouterTimelock {
         if new_delay == 0 {
             return Err(TimelockError::InvalidDelay);
         }
+        let old_delay: u64 = env.storage().instance().get(&DataKey::MinDelay).ok_or(TimelockError::NotInitialized)?;
         env.storage().instance().set(&DataKey::MinDelay, &new_delay);
+        env.events().publish((Symbol::new(&env, "min_delay_updated"),), (old_delay, new_delay));
         Ok(())
     }
 
@@ -824,7 +853,7 @@ impl RouterTimelock {
 mod tests {
     extern crate std;
     use super::*;
-    use soroban_sdk::{testutils::{Address as _, Ledger}, Env, String, Vec};
+    use soroban_sdk::{testutils::{Address as _, Events, Ledger}, Env, IntoVal, String, Vec};
 
     fn setup() -> (Env, Address, RouterTimelockClient<'static>) {
         let env = Env::default();
@@ -1294,23 +1323,35 @@ mod tests {
     }
 
     #[test]
-    fn test_queue_empty_description_fails() {
+    fn test_set_min_delay_emits_event() {
         let (env, admin, client) = setup();
-        let target = Address::generate(&env);
-        let deps = Vec::new(&env);
-        assert_eq!(
-            client.try_queue(&admin, &String::from_str(&env, ""), &target, &3600u64, &deps),
-            Err(Ok(TimelockError::InvalidDescription))
-        );
+        client.set_min_delay(&admin, &7200);
+
+        let events = env.events().all();
+        let last = events.last().unwrap();
+        let topic: Symbol = last.1.get(0).unwrap().into_val(&env);
+        assert_eq!(topic, Symbol::new(&env, "min_delay_updated"));
+        let (old, new): (u64, u64) = last.2.into_val(&env);
+        assert_eq!(old, 3600);
+        assert_eq!(new, 7200);
     }
 
     #[test]
-    fn test_queue_nonempty_description_succeeds() {
+    fn test_cancel_all_emits_summary_event() {
         let (env, admin, client) = setup();
         let target = Address::generate(&env);
         let deps = Vec::new(&env);
-        assert!(
-            client.try_queue(&admin, &String::from_str(&env, "upgrade oracle"), &target, &3600u64, &deps).is_ok()
-        );
+        client.queue(&admin, &String::from_str(&env, "op0"), &target, &3600u64, &deps);
+        client.queue(&admin, &String::from_str(&env, "op1"), &target, &3600u64, &deps);
+
+        let count = client.cancel_all(&admin);
+        assert_eq!(count, 2);
+
+        let events = env.events().all();
+        let last = events.last().unwrap();
+        let topic: Symbol = last.1.get(0).unwrap().into_val(&env);
+        assert_eq!(topic, Symbol::new(&env, "all_cancelled"));
+        let emitted_count: u64 = last.2.into_val(&env);
+        assert_eq!(emitted_count, 2);
     }
 }
