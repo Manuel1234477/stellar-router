@@ -63,6 +63,12 @@ impl RouterAccess {
     ) -> Result<(), AccessError> {
         admin.require_auth();
         Self::require_role_manager(&env, &admin, &role)?;
+        if Self::is_blacklisted_internal(&env, &account) {
+            return Err(AccessError::Blacklisted);
+        }
+        if Self::has_role_internal(&env, &account, &role) {
+            return Err(AccessError::AlreadyHasRole);
+        }
 
         let expiry_timestamp = match expires_in {
             Some(seconds) => env.ledger().timestamp() + seconds,
@@ -536,9 +542,48 @@ mod tests {
         // Check that both users are in role members
         let members_after_second = client.get_role_members(&role);
         assert_eq!(members_after_second.len(), 2);
-        assert!(members_after_second.contains(&user1));
+assert!(members_after_second.contains(&user1));
         assert!(members_after_second.contains(&user2));
     }
+
+    // Issue #175: grant_role missing guards
+
+    #[test]
+    fn test_grant_role_blacklisted_account_fails() {
+        let (env, admin, client) = setup();
+        let role = String::from_str(&env, "operator");
+        let blacklisted_user = Address::generate(&env);
+
+        client.blacklist(&admin, &blacklisted_user);
+
+        let result = client.try_grant_role(&admin, &blacklisted_user, &role, &None);
+        assert_eq!(result, Err(Ok(AccessError::Blacklisted)));
+    }
+
+    #[test]
+    fn test_grant_role_already_has_role_fails() {
+        let (env, admin, client) = setup();
+        let role = String::from_str(&env, "operator");
+        let user = Address::generate(&env);
+
+        client.grant_role(&admin, &user, &role, &None)
+            .expect("first grant should succeed");
+
+        let result = client.try_grant_role(&admin, &user, &role, &None);
+        assert_eq!(result, Err(Ok(AccessError::AlreadyHasRole)));
+    }
+
+    #[test]
+    fn test_grant_role_returns_error_on_unauthorized() {
+        let (env, _admin, client) = setup();
+        let role = String::from_str(&env, "operator");
+        let unauthorized = Address::generate(&env);
+        let user = Address::generate(&env);
+
+        let result = client.try_grant_role(&unauthorized, &user, &role, &None);
+        assert_eq!(result, Err(Ok(AccessError::Unauthorized)));
+    }
+}
 
     #[test]
     fn test_get_roles_for_address_populated_after_grant() {
