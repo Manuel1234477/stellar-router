@@ -503,6 +503,9 @@ impl RouterMiddleware {
     /// Returns the current [`RateLimitState`] for `caller` on `route`, which includes the
     /// number of calls made in the current window and when the window started.
     ///
+    /// If the window has elapsed, returns a reset state with `calls_in_window = 0`
+    /// and updated `window_start`.
+    ///
     /// # Arguments
     /// * `env` - The Soroban environment.
     /// * `route` - The route name to look up.
@@ -512,10 +515,33 @@ impl RouterMiddleware {
     /// `Some(`[`RateLimitState`]`)` if the caller has made at least one call on this route,
     /// `None` otherwise.
     pub fn rate_limit_state(env: Env, route: String, caller: Address) -> Option<RateLimitState> {
-        env.storage().instance().get(&DataKey::RateLimit(route, caller))
+        let state: RateLimitState = env
+            .storage()
+            .instance()
+            .get(&DataKey::RateLimit(route.clone(), caller))?;
+        
+        // If route config exists, apply window expiry logic
+        if let Some(config) = env
+            .storage()
+            .instance()
+            .get::<DataKey, RouteConfig>(&DataKey::RouteConfig(route))
+        {
+            let now = env.ledger().timestamp();
+            let window_elapsed = now >= state.window_start + config.window_seconds;
+            
+            if window_elapsed {
+                Some(RateLimitState {
+                    calls_in_window: 0,
+                    window_start: now,
+                })
+            } else {
+                Some(state)
+            }
+        } else {
+            // No config for this route — return raw state as-is
+            Some(state)
+        }
     }
-
-    /// Get config for a route.
     ///
     /// Returns the [`RouteConfig`] for `route` if one has been set via
     /// `configure_route`.
@@ -1078,5 +1104,64 @@ mod tests {
         client.reset_circuit_breaker(&admin, &route);
         let state = client.circuit_breaker_state(&route).unwrap();
         assert!(!state.is_open);
+    }
+
+    // ── Issue #154: rate_limit_state window expiry ────────────────────────────
+
+    #[test]
+    fn test_rate_limit_state_resets_after_window() {
+        let (env, admin, client) = setup();
+        let route = String::from_str(&env, "oracle/get_price");
+        // Configure route with 60 second window and max 5 calls
+        client.configure_route(&admin, &route, &5, &60, &true, &0, &0, &0);
+
+        let caller = Address::generate(&env);
+
+        // Make 3 calls
+        for _ in 0..3 {
+            client.pre_call(&caller, &route);
+        }
+
+        // Check state within window — should show 3 calls
+        let state_within_window = client.rate_limit_state(&route, &caller).unwrap();
+        assert_eq!(state_within_window.calls_in_window, 3);
+
+        // Advance time past the window
+        env.ledger().set_timestamp(env.ledger().timestamp() + 61);
+
+        // Check state after window expires — should reset to 0
+        let state_after_window = client.rate_limit_state(&route, &caller).unwrap();
+        assert_eq!(state_after_window.calls_in_window, 0);
+        assert_eq!(state_after_window.window_start, env.ledger().timestamp() - 1);
+    }
+
+    #[test]
+    fn test_rate_limit_state_within_window_accurate() {
+        let (env, admin, client) = setup();
+        let route = String::from_str(&env, "oracle/get_price");
+        // Configure route with 60 second window
+        client.configure_route(&admin, &route, &5, &60, &true, &0, &0, &0);
+
+        let caller = Address::generate(&env);
+
+        // Make 2 calls
+        client.pre_call(&caller, &route);
+        client.pre_call(&caller, &route);
+
+        // Check state — should show 2 calls
+        let state = client.rate_limit_state(&route, &caller).unwrap();
+        assert_eq!(state.calls_in_window, 2);
+
+        // Advance time but stay within window (30 seconds, window is 60)
+        env.ledger().set_timestamp(env.ledger().timestamp() + 30);
+
+        // State should still show 2 calls, not reset
+        let state_still_in_window = client.rate_limit_state(&route, &caller).unwrap();
+        assert_eq!(state_still_in_window.calls_in_window, 2);
+        assert_eq!(
+            state_still_in_window.window_start,
+            state.window_start,
+            "window_start should not change within window"
+        );
     }
 }
