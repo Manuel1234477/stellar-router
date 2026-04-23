@@ -2,6 +2,7 @@
 name = "stellar-router"
 resolver = "2"
 members = [
+    "contracts/router-common",
     "contracts/router-core",
     "contracts/router-registry",
     "contracts/router-access",

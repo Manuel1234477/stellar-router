@@ -207,7 +207,7 @@ impl RouterMulticall {
 
             env.events().publish(
                 (Symbol::new(&env, "call_result"),),
-                (&call.target, &call.function, success),
+                (&caller, &call.target, &call.function, success),
             );
         }
 
@@ -256,7 +256,14 @@ impl RouterMulticall {
         if max_batch_size == 0 {
             return Err(MulticallError::InvalidConfig);
         }
+        let old_max: u32 = env.storage().instance()
+            .get(&DataKey::MaxBatchSize)
+            .unwrap_or(0);
         env.storage().instance().set(&DataKey::MaxBatchSize, &max_batch_size);
+        env.events().publish(
+            (Symbol::new(&env, "max_batch_size_updated"),),
+            (old_max, max_batch_size),
+        );
         Ok(())
     }
 
@@ -352,7 +359,7 @@ impl RouterMulticall {
 mod tests {
     extern crate std;
     use super::*;
-    use soroban_sdk::{testutils::Address as _, Env, Symbol, Vec};
+    use soroban_sdk::{testutils::{Address as _, Events}, Env, FromVal, Symbol, Vec};
 
     fn setup() -> (Env, Address, RouterMulticallClient<'static>) {
         let env = Env::default();
@@ -410,6 +417,20 @@ mod tests {
         let (_env, admin, client) = setup();
         client.set_max_batch_size(&admin, &5);
         assert_eq!(client.max_batch_size(), 5);
+    }
+
+    #[test]
+    fn test_set_max_batch_size_emits_event() {
+        let (env, admin, client) = setup();
+        // initial max is 10 (from setup)
+        client.set_max_batch_size(&admin, &5);
+        let events = env.events().all();
+        let last = events.last().unwrap();
+        let topic: Symbol = last.1.get(0).unwrap().into_val(&env);
+        assert_eq!(topic, Symbol::new(&env, "max_batch_size_updated"));
+        let (old, new): (u32, u32) = last.2.into_val(&env);
+        assert_eq!(old, 10);
+        assert_eq!(new, 5);
     }
 
     #[test]
@@ -689,4 +710,39 @@ mod tests {
         assert_eq!(summary.succeeded, 1);
         assert_eq!(summary.failed, 1);
     }
+
+    #[test]
+    fn test_call_result_event_includes_caller() {
+            let (env, _admin, client) = setup();
+            let mock_id = env.register_contract(None, MockContract);
+            let caller = Address::generate(&env);
+
+            let mut calls = Vec::new(&env);
+            calls.push_back(CallDescriptor {
+                target: mock_id.clone(),
+                function: Symbol::new(&env, "success"),
+                required: true,
+                instruction_budget: None,
+            });
+
+            client.execute_batch(&caller, &calls, &false);
+
+            // Find the call_result event — tuple is (contract_id, topics: Vec<Val>, data: Val)
+            let all_events = env.events().all();
+            let (_, _, data) = all_events
+                .iter()
+                .find(|(_, topics, _)| {
+                    topics
+                        .get(0)
+                        .map(|v| Symbol::from_val(&env, &v) == Symbol::new(&env, "call_result"))
+                        .unwrap_or(false)
+                })
+                .expect("call_result event not found");
+
+            // Data is a Vec<Val>; decode first element as Address and assert it equals caller
+            let data_vec = soroban_sdk::Vec::<soroban_sdk::Val>::from_val(&env, &data);
+            let event_caller = Address::from_val(&env, &data_vec.get(0).unwrap());
+
+            assert_eq!(event_caller, caller);
+        }
 }

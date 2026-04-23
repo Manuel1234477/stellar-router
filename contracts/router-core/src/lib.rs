@@ -13,8 +13,7 @@
 //! - Event emission on every route operation
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, contracterror,
-    Address, Env, String, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, Address, Env, String, Symbol, Vec,
 };
 
 // ── Storage Keys ──────────────────────────────────────────────────────────────
@@ -22,14 +21,25 @@ use soroban_sdk::{
 #[contracttype]
 pub enum DataKey {
     Admin,
-    Route(String),    // name -> RouteEntry
+    Route(String), // name -> RouteEntry
     RouteNames,
     Paused,
     TotalRouted,
-    Alias(String),    // alias -> original_name
+    Alias(String), // alias -> original_name
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct RouteMetadata {
+    /// Human-readable description (max 256 chars)
+    pub description: String,
+    /// Tags for categorization (max 5 tags)
+    pub tags: Vec<String>,
+    /// Optional owner address
+    pub owner: Option<Address>,
+}
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -42,6 +52,8 @@ pub struct RouteEntry {
     pub paused: bool,
     /// Who last updated this route
     pub updated_by: Address,
+    /// Optional metadata for the route
+    pub metadata: Option<RouteMetadata>,
 }
 
 // ── Errors ────────────────────────────────────────────────────────────────────
@@ -56,6 +68,7 @@ pub enum RouterError {
     RoutePaused = 5,
     RouterPaused = 6,
     RouteAlreadyExists = 7,
+    InvalidRouteName = 8,
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -85,7 +98,9 @@ impl RouterCore {
             return Err(RouterError::AlreadyInitialized);
         }
         env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage().instance().set(&DataKey::RouteNames, &Vec::<String>::new(&env));
+        env.storage()
+            .instance()
+            .set(&DataKey::RouteNames, &Vec::<String>::new(&env));
         env.storage().instance().set(&DataKey::Paused, &false);
         env.storage().instance().set(&DataKey::TotalRouted, &0u64);
         Ok(())
@@ -114,16 +129,27 @@ impl RouterCore {
         caller: Address,
         name: String,
         address: Address,
+        metadata: Option<RouteMetadata>,
     ) -> Result<(), RouterError> {
         caller.require_auth();
         Self::require_admin(&env, &caller)?;
 
         if Self::is_empty_or_whitespace(&name) {
-            return Err(RouterError::RouteNotFound);
+            return Err(RouterError::InvalidRouteName);
         }
 
         if env.storage().instance().has(&DataKey::Route(name.clone())) {
             return Err(RouterError::RouteAlreadyExists);
+        }
+
+        // Validate metadata if provided
+        if let Some(ref meta) = metadata {
+            if meta.description.len() > 256 {
+                return Err(RouterError::RouteNotFound); // Using existing error for simplicity
+            }
+            if meta.tags.len() > 5 {
+                return Err(RouterError::RouteNotFound);
+            }
         }
 
         let entry = RouteEntry {
@@ -131,16 +157,21 @@ impl RouterCore {
             name: name.clone(),
             paused: false,
             updated_by: caller,
+            metadata,
         };
-        env.storage().instance().set(&DataKey::Route(name.clone()), &entry);
+        env.storage()
+            .instance()
+            .set(&DataKey::Route(name.clone()), &entry);
 
         let mut route_names = Self::get_route_names(&env);
         route_names.push_back(name.clone());
-        env.storage().instance().set(&DataKey::RouteNames, &route_names);
+        env.storage()
+            .instance()
+            .set(&DataKey::RouteNames, &route_names);
 
         env.events().publish(
             (Symbol::new(&env, "route_registered"),),
-            name.clone(),
+            (name.clone(), entry.address.clone()),
         );
 
         Ok(())
@@ -184,12 +215,12 @@ impl RouterCore {
         let old_address = entry.address.clone();
         entry.address = new_address.clone();
         entry.updated_by = caller;
-        env.storage().instance().set(&DataKey::Route(name.clone()), &entry);
+        env.storage()
+            .instance()
+            .set(&DataKey::Route(name.clone()), &entry);
 
-        env.events().publish(
-            (Symbol::new(&env, "route_updated"),),
-            name.clone(),
-        );
+        env.events()
+            .publish((Symbol::new(&env, "route_updated"),), name.clone());
 
         env.events().publish(
             (Symbol::new(&env, "route_overwritten"),),
@@ -223,7 +254,9 @@ impl RouterCore {
             return Err(RouterError::RouteNotFound);
         }
 
-        env.storage().instance().remove(&DataKey::Route(name.clone()));
+        env.storage()
+            .instance()
+            .remove(&DataKey::Route(name.clone()));
 
         let route_names = Self::get_route_names(&env);
         let mut updated_route_names = Vec::new(&env);
@@ -236,10 +269,8 @@ impl RouterCore {
             .instance()
             .set(&DataKey::RouteNames, &updated_route_names);
 
-        env.events().publish(
-            (Symbol::new(&env, "route_removed"),),
-            name.clone(),
-        );
+        env.events()
+            .publish((Symbol::new(&env, "route_removed"),), name.clone());
 
         Ok(())
     }
@@ -273,7 +304,11 @@ impl RouterCore {
         }
 
         // Resolve alias if present
-        let resolved_name = if let Some(original) = env.storage().instance().get::<DataKey, String>(&DataKey::Alias(name.clone())) {
+        let resolved_name = if let Some(original) = env
+            .storage()
+            .instance()
+            .get::<DataKey, String>(&DataKey::Alias(name.clone()))
+        {
             original
         } else {
             name.clone()
@@ -286,6 +321,10 @@ impl RouterCore {
             .ok_or(RouterError::RouteNotFound)?;
 
         if entry.paused {
+            env.events().publish(
+                (Symbol::new(&env, "route_resolve_paused"),),
+                (name.clone(),),
+            );
             return Err(RouterError::RoutePaused);
         }
 
@@ -295,7 +334,9 @@ impl RouterCore {
             .instance()
             .get(&DataKey::TotalRouted)
             .unwrap_or(0);
-        env.storage().instance().set(&DataKey::TotalRouted, &(total + 1));
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalRouted, &(total + 1));
 
         env.events().publish(
             (Symbol::new(&env, "routed"),),
@@ -339,12 +380,13 @@ impl RouterCore {
             .ok_or(RouterError::RouteNotFound)?;
 
         entry.paused = paused;
-        env.storage().instance().set(&DataKey::Route(name.clone()), &entry);
+        entry.updated_by = caller.clone();
+        env.storage()
+            .instance()
+            .set(&DataKey::Route(name.clone()), &entry);
 
-        env.events().publish(
-            (Symbol::new(&env, "route_paused"),),
-            (name.clone(), paused),
-        );
+        env.events()
+            .publish((Symbol::new(&env, "route_paused"),), (name.clone(), paused));
 
         Ok(())
     }
@@ -371,10 +413,8 @@ impl RouterCore {
         Self::require_admin(&env, &caller)?;
         env.storage().instance().set(&DataKey::Paused, &paused);
 
-        env.events().publish(
-            (Symbol::new(&env, "router_paused"),),
-            paused,
-        );
+        env.events()
+            .publish((Symbol::new(&env, "router_paused"),), paused);
 
         Ok(())
     }
@@ -394,6 +434,79 @@ impl RouterCore {
         env.storage().instance().get(&DataKey::Route(name))
     }
 
+    /// Update metadata for an existing route.
+    ///
+    /// Allows updating route metadata independently of the route address.
+    /// Caller must be the admin.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `caller` - The address initiating the call; must be the admin.
+    /// * `name` - The name of the route to update.
+    /// * `metadata` - The new metadata for the route.
+    ///
+    /// # Returns
+    /// `Ok(())` on success.
+    ///
+    /// # Errors
+    /// * [`RouterError::Unauthorized`] — if `caller` is not the admin.
+    /// * [`RouterError::RouteNotFound`] — if no route with `name` exists.
+    pub fn update_metadata(
+        env: Env,
+        caller: Address,
+        name: String,
+        metadata: Option<RouteMetadata>,
+    ) -> Result<(), RouterError> {
+        caller.require_auth();
+        Self::require_admin(&env, &caller)?;
+
+        let mut entry: RouteEntry = env
+            .storage()
+            .instance()
+            .get(&DataKey::Route(name.clone()))
+            .ok_or(RouterError::RouteNotFound)?;
+
+        // Validate metadata if provided
+        if let Some(ref meta) = metadata {
+            if meta.description.len() > 256 {
+                return Err(RouterError::RouteNotFound);
+            }
+            if meta.tags.len() > 5 {
+                return Err(RouterError::RouteNotFound);
+            }
+        }
+
+        entry.metadata = metadata;
+        env.storage()
+            .instance()
+            .set(&DataKey::Route(name.clone()), &entry);
+
+        env.events().publish(
+            (Symbol::new(&env, "metadata_updated"),),
+            (name.clone(), metadata.is_some()),
+        );
+
+        Ok(())
+    }
+
+    /// Get metadata for a route.
+    ///
+    /// Returns the metadata for the given route name, or `None` if no
+    /// metadata is set or the route doesn't exist.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `name` - The name of the route.
+    ///
+    /// # Returns
+    /// `Some(`[`RouteMetadata`]`)` if metadata exists, `None` otherwise.
+    pub fn get_metadata(env: Env, name: String) -> Option<RouteMetadata> {
+        env.storage()
+            .instance()
+            .get::<DataKey, RouteEntry>(&DataKey::Route(name))
+            .and_then(|entry| entry.metadata)
+    }
+
     /// Get the total number of resolved calls.
     ///
     /// Returns the cumulative count of successful `resolve` invocations
@@ -405,7 +518,10 @@ impl RouterCore {
     /// # Returns
     /// The total number of times a route has been resolved.
     pub fn total_routed(env: Env) -> u64 {
-        env.storage().instance().get(&DataKey::TotalRouted).unwrap_or(0)
+        env.storage()
+            .instance()
+            .get(&DataKey::TotalRouted)
+            .unwrap_or(0)
     }
 
     /// Create an alias for an existing route.
@@ -437,15 +553,27 @@ impl RouterCore {
         Self::require_admin(&env, &caller)?;
 
         // Verify existing route exists
-        if !env.storage().instance().has(&DataKey::Route(existing_name.clone())) {
+        if !env
+            .storage()
+            .instance()
+            .has(&DataKey::Route(existing_name.clone()))
+        {
             return Err(RouterError::RouteNotFound);
         }
 
         // Check alias doesn't already exist as route or alias
-        if env.storage().instance().has(&DataKey::Route(alias_name.clone())) {
+        if env
+            .storage()
+            .instance()
+            .has(&DataKey::Route(alias_name.clone()))
+        {
             return Err(RouterError::RouteAlreadyExists);
         }
-        if env.storage().instance().has(&DataKey::Alias(alias_name.clone())) {
+        if env
+            .storage()
+            .instance()
+            .has(&DataKey::Alias(alias_name.clone()))
+        {
             return Err(RouterError::RouteAlreadyExists);
         }
 
@@ -480,16 +608,20 @@ impl RouterCore {
         caller.require_auth();
         Self::require_admin(&env, &caller)?;
 
-        if !env.storage().instance().has(&DataKey::Alias(alias_name.clone())) {
+        if !env
+            .storage()
+            .instance()
+            .has(&DataKey::Alias(alias_name.clone()))
+        {
             return Err(RouterError::RouteNotFound);
         }
 
-        env.storage().instance().remove(&DataKey::Alias(alias_name.clone()));
+        env.storage()
+            .instance()
+            .remove(&DataKey::Alias(alias_name.clone()));
 
-        env.events().publish(
-            (Symbol::new(&env, "alias_removed"),),
-            alias_name,
-        );
+        env.events()
+            .publish((Symbol::new(&env, "alias_removed"),), alias_name);
 
         Ok(())
     }
@@ -527,7 +659,11 @@ impl RouterCore {
     /// # Errors
     /// * [`RouterError::Unauthorized`] — if `current` is not the admin.
     /// * [`RouterError::NotInitialized`] — if the contract has not been initialized.
-    pub fn transfer_admin(env: Env, current: Address, new_admin: Address) -> Result<(), RouterError> {
+    pub fn transfer_admin(
+        env: Env,
+        current: Address,
+        new_admin: Address,
+    ) -> Result<(), RouterError> {
         current.require_auth();
         Self::require_admin(&env, &current)?;
         env.storage().instance().set(&DataKey::Admin, &new_admin);
@@ -538,9 +674,9 @@ impl RouterCore {
         Ok(())
     }
 
-/// Returns all currently registered route names as a vector of strings.
-    /// This is a read-only operation that scans all instance storage keys.
-    /// The order of returned names is not guaranteed.
+    /// Returns all currently registered route names as a vector of strings.
+    ///
+    /// This is a read-only operation. The order of returned names is not guaranteed.
     ///
     /// # Arguments
     /// * `env` - The Soroban environment.
@@ -574,6 +710,17 @@ impl RouterCore {
 
     fn is_empty_or_whitespace(name: &String) -> bool {
         name.len() == 0
+        if name.len() == 0 {
+            return true;
+        }
+        let bytes = name.clone().to_bytes();
+        for i in 0..bytes.len() {
+            if bytes.get_unchecked(i) != 32 {
+                // space
+                return false;
+            }
+        }
+        true
     }
 }
 
@@ -583,7 +730,10 @@ impl RouterCore {
 mod tests {
     extern crate std;
     use super::*;
-    use soroban_sdk::{testutils::{Address as _, Events}, vec, Env, IntoVal, String, Val};
+    use soroban_sdk::{
+        testutils::{Address as _, Events},
+        vec, Env, IntoVal, String,
+    };
 
     fn setup() -> (Env, Address, RouterCoreClient<'static>) {
         let env = Env::default();
@@ -600,10 +750,24 @@ mod tests {
         let (env, admin, client) = setup();
         let name = String::from_str(&env, "oracle");
         let addr = Address::generate(&env);
-        client.register_route(&admin, &name, &addr);
+        client.register_route(&admin, &name, &addr, &None);
         let resolved = client.resolve(&name);
         assert_eq!(resolved, addr);
         assert_eq!(client.total_routed(), 1);
+
+        // Verify route_registered event carries both name and address
+        let events = env.events().all();
+        let reg_event = events.iter().find(|e| {
+            e.1.get(0)
+                .map(|v| {
+                    let s: Symbol = v.into_val(&env);
+                    s == Symbol::new(&env, "route_registered")
+                })
+                .unwrap_or(false)
+        }).unwrap();
+        let (emitted_name, emitted_addr): (String, Address) = reg_event.2.into_val(&env);
+        assert_eq!(emitted_name, name);
+        assert_eq!(emitted_addr, addr);
     }
 
     #[test]
@@ -612,7 +776,7 @@ mod tests {
         let name = String::from_str(&env, "oracle");
         let addr1 = Address::generate(&env);
         let addr2 = Address::generate(&env);
-        client.register_route(&admin, &name, &addr1);
+        client.register_route(&admin, &name, &addr1, &None);
         client.update_route(&admin, &name, &addr2);
         assert_eq!(client.resolve(&name), addr2);
     }
@@ -622,7 +786,7 @@ mod tests {
         let (env, admin, client) = setup();
         let name = String::from_str(&env, "oracle");
         let addr = Address::generate(&env);
-        client.register_route(&admin, &name, &addr);
+        client.register_route(&admin, &name, &addr, &None);
         client.remove_route(&admin, &name);
         let result = client.try_resolve(&name);
         assert_eq!(result, Err(Ok(RouterError::RouteNotFound)));
@@ -633,8 +797,8 @@ mod tests {
         let (env, admin, client) = setup();
         let name = String::from_str(&env, "oracle");
         let addr = Address::generate(&env);
-        client.register_route(&admin, &name, &addr);
-        let result = client.try_register_route(&admin, &name, &addr);
+        client.register_route(&admin, &name, &addr, &None);
+        let result = client.try_register_route(&admin, &name, &addr, &None);
         assert_eq!(result, Err(Ok(RouterError::RouteAlreadyExists)));
     }
 
@@ -643,7 +807,7 @@ mod tests {
         let (env, admin, client) = setup();
         let name = String::from_str(&env, "oracle");
         let addr = Address::generate(&env);
-        client.register_route(&admin, &name, &addr);
+        client.register_route(&admin, &name, &addr, &None);
         client.set_route_paused(&admin, &name, &true);
         let result = client.try_resolve(&name);
         assert_eq!(result, Err(Ok(RouterError::RoutePaused)));
@@ -654,27 +818,53 @@ mod tests {
         let (env, admin, client) = setup();
         let name = String::from_str(&env, "oracle");
         let addr = Address::generate(&env);
-        
+
         // Register a route
-        client.register_route(&admin, &name, &addr);
-        
+        client.register_route(&admin, &name, &addr, &None);
+
         // Verify resolve works initially
         let resolved = client.resolve(&name);
         assert_eq!(resolved, addr);
-        
+
         // Pause the route
         client.set_route_paused(&admin, &name, &true);
-        
+
         // Assert that resolve now fails with RoutePaused error
         let result = client.try_resolve(&name);
         assert_eq!(result, Err(Ok(RouterError::RoutePaused)));
-        
+
         // Unpause the route
         client.set_route_paused(&admin, &name, &false);
-        
+
         // Assert that resolve works again
         let resolved = client.resolve(&name);
         assert_eq!(resolved, addr);
+    }
+
+    #[test]
+    fn test_paused_route_emits_event() {
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "oracle");
+        let addr = Address::generate(&env);
+
+        client.register_route(&admin, &name, &addr);
+        client.set_route_paused(&admin, &name, &true);
+
+        // Attempt to resolve the paused route
+        let _ = client.try_resolve(&name);
+
+        // Verify the route_resolve_paused event was emitted
+        let event = env.events().all().last().unwrap().clone();
+        assert_eq!(event.0, client.address);
+        assert_eq!(
+            event.1,
+            vec![
+                &env,
+                Symbol::new(&env, "route_resolve_paused").into_val(&env)
+            ]
+        );
+        let expected_data: Val = (name.clone(),).into_val(&env);
+        assert_eq!(event.2, expected_data);
     }
 
     #[test]
@@ -682,7 +872,7 @@ mod tests {
         let (env, admin, client) = setup();
         let name = String::from_str(&env, "oracle");
         let addr = Address::generate(&env);
-        client.register_route(&admin, &name, &addr);
+        client.register_route(&admin, &name, &addr, &None);
         client.set_paused(&admin, &true);
         let result = client.try_resolve(&name);
         assert_eq!(result, Err(Ok(RouterError::RouterPaused)));
@@ -726,12 +916,12 @@ mod tests {
         let (env, admin, client) = setup();
         let name = String::from_str(&env, "oracle");
         let addr = Address::generate(&env);
-        client.register_route(&admin, &name, &addr);
-        
+        client.register_route(&admin, &name, &addr, &None);
+
         let events_before = env.events().all().len();
         client.set_route_paused(&admin, &name, &true);
         let events_after = env.events().all().len();
-        
+
         // Verify an event was emitted
         assert_eq!(events_after, events_before + 1);
     }
@@ -739,11 +929,11 @@ mod tests {
     #[test]
     fn test_set_paused_emits_event() {
         let (env, admin, client) = setup();
-        
+
         let events_before = env.events().all().len();
         client.set_paused(&admin, &true);
         let events_after = env.events().all().len();
-        
+
         // Verify an event was emitted
         assert_eq!(events_after, events_before + 1);
     }
@@ -777,7 +967,7 @@ mod tests {
         let name = String::from_str(&env, "oracle");
         let addr1 = Address::generate(&env);
         let addr2 = Address::generate(&env);
-        client.register_route(&admin, &name, &addr1);
+        client.register_route(&admin, &name, &addr1, &None);
         client.set_route_paused(&admin, &name, &true);
         client.update_route(&admin, &name, &addr2);
         let entry = client.get_route(&name).unwrap();
@@ -790,7 +980,7 @@ mod tests {
         let (env, admin, client) = setup();
         let name = String::from_str(&env, "oracle");
         let addr = Address::generate(&env);
-        client.register_route(&admin, &name, &addr);
+        client.register_route(&admin, &name, &addr, &None);
         client.set_route_paused(&admin, &name, &true);
         client.set_route_paused(&admin, &name, &false);
         assert_eq!(client.resolve(&name), addr);
@@ -801,9 +991,12 @@ mod tests {
         let (env, admin, client) = setup();
         let name = String::from_str(&env, "oracle");
         let addr = Address::generate(&env);
-        client.register_route(&admin, &name, &addr);
+        client.register_route(&admin, &name, &addr, &None);
         client.set_paused(&admin, &true);
-        assert_eq!(client.try_resolve(&name), Err(Ok(RouterError::RouterPaused)));
+        assert_eq!(
+            client.try_resolve(&name),
+            Err(Ok(RouterError::RouterPaused))
+        );
         client.set_paused(&admin, &false);
         assert_eq!(client.resolve(&name), addr);
     }
@@ -814,7 +1007,7 @@ mod tests {
         let name = String::from_str(&env, "oracle");
         let addr1 = Address::generate(&env);
         let addr2 = Address::generate(&env);
-        client.register_route(&admin, &name, &addr1);
+        client.register_route(&admin, &name, &addr1, &None);
 
         let events_before = env.events().all().len();
         client.update_route(&admin, &name, &addr2);
@@ -839,8 +1032,8 @@ mod tests {
         let vault = String::from_str(&env, "vault");
         let addr1 = Address::generate(&env);
         let addr2 = Address::generate(&env);
-        client.register_route(&admin, &oracle, &addr1);
-        client.register_route(&admin, &vault, &addr2);
+        client.register_route(&admin, &oracle, &addr1, &None);
+        client.register_route(&admin, &vault, &addr2, &None);
         let routes: Vec<String> = client.get_all_routes();
         assert_eq!(routes.len(), 2);
         assert!(routes.contains(&oracle));
@@ -853,7 +1046,7 @@ mod tests {
         let empty_name = String::from_str(&env, "");
         let addr = Address::generate(&env);
         let result = client.try_register_route(&admin, &empty_name, &addr);
-        assert_eq!(result, Err(Ok(RouterError::RouteNotFound)));
+        assert_eq!(result, Err(Ok(RouterError::InvalidRouteName)));
     }
 
     #[test]
@@ -864,7 +1057,11 @@ mod tests {
         let whitespace_name = String::from_str(&env, "   ");
         let addr = Address::generate(&env);
         assert!(client.try_register_route(&admin, &whitespace_name, &addr).is_ok());
+        let result = client.try_register_route(&admin, &whitespace_name, &addr);
+        assert_eq!(result, Err(Ok(RouterError::InvalidRouteName)));
     }
+
+    #[test]
     fn test_get_all_routes_updates_after_remove() {
         let (env, admin, client) = setup();
         let oracle = String::from_str(&env, "oracle");
@@ -872,8 +1069,8 @@ mod tests {
         let addr1 = Address::generate(&env);
         let addr2 = Address::generate(&env);
 
-        client.register_route(&admin, &oracle, &addr1);
-        client.register_route(&admin, &vault, &addr2);
+        client.register_route(&admin, &oracle, &addr1, &None);
+        client.register_route(&admin, &vault, &addr2, &None);
         assert_eq!(client.get_all_routes().len(), 2);
 
         client.remove_route(&admin, &oracle);
@@ -890,7 +1087,7 @@ mod tests {
         let addr1 = Address::generate(&env);
         let addr2 = Address::generate(&env);
 
-        client.register_route(&admin, &oracle, &addr1);
+        client.register_route(&admin, &oracle, &addr1, &None);
         assert_eq!(client.get_all_routes().len(), 1);
 
         client.remove_route(&admin, &oracle);
@@ -907,29 +1104,30 @@ mod tests {
         let (env, admin, client) = setup();
         let name = String::from_str(&env, "oracle");
         let addr = Address::generate(&env);
-        client.register_route(&admin, &name, &addr);
-        
+        client.register_route(&admin, &name, &addr, &None);
+
         // Verify resolve works before pause
         assert_eq!(client.resolve(&name), addr);
-        
+
         // Pause the router
         client.set_paused(&admin, &true);
-        
+
         // Verify resolve fails after pause
         let result = client.try_resolve(&name);
         assert_eq!(result, Err(Ok(RouterError::RouterPaused)));
     }
 
     #[test]
+    #[test]
     fn test_pause_all_checked_before_route_lookup() {
         let (env, admin, client) = setup();
         let name = String::from_str(&env, "oracle");
         let addr = Address::generate(&env);
-        client.register_route(&admin, &name, &addr);
-        
+        client.register_route(&admin, &name, &addr, &None);
+
         // Pause the router
         client.set_paused(&admin, &true);
-        
+
         // Even with a valid route, resolve should fail with RouterPaused, not RouteNotFound
         let result = client.try_resolve(&name);
         assert_eq!(result, Err(Ok(RouterError::RouterPaused)));
@@ -941,7 +1139,7 @@ mod tests {
         let name = String::from_str(&env, "oracle");
         let alias = String::from_str(&env, "oracle_v1");
         let addr = Address::generate(&env);
-        client.register_route(&admin, &name, &addr);
+        client.register_route(&admin, &name, &addr, &None);
         client.add_alias(&admin, &name, &alias);
         assert_eq!(client.resolve(&alias), addr);
     }
@@ -952,7 +1150,7 @@ mod tests {
         let name = String::from_str(&env, "oracle");
         let alias = String::from_str(&env, "oracle_v1");
         let addr = Address::generate(&env);
-        client.register_route(&admin, &name, &addr);
+        client.register_route(&admin, &name, &addr, &None);
         client.add_alias(&admin, &name, &alias);
         client.remove_alias(&admin, &alias);
         let result = client.try_resolve(&alias);
@@ -975,8 +1173,8 @@ mod tests {
         let name2 = String::from_str(&env, "vault");
         let addr1 = Address::generate(&env);
         let addr2 = Address::generate(&env);
-        client.register_route(&admin, &name1, &addr1);
-        client.register_route(&admin, &name2, &addr2);
+        client.register_route(&admin, &name1, &addr1, &None);
+        client.register_route(&admin, &name2, &addr2, &None);
         let result = client.try_add_alias(&admin, &name1, &name2);
         assert_eq!(result, Err(Ok(RouterError::RouteAlreadyExists)));
     }
@@ -1016,5 +1214,152 @@ mod tests {
             client.try_add_alias(&admin, &name, &alias),
             Err(Ok(RouterError::RouteNotFound))
         );
+    fn test_register_route_with_metadata() {
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "oracle");
+        let addr = Address::generate(&env);
+        let description = String::from_str(&env, "Oracle price feed");
+        let tags = vec![
+            &env,
+            String::from_str(&env, "defi"),
+            String::from_str(&env, "oracle"),
+        ];
+        let owner = Some(admin.clone());
+
+        let metadata = Some(RouteMetadata {
+            description: description.clone(),
+            tags: tags.clone(),
+            owner: owner.clone(),
+        });
+
+        client.register_route(&admin, &name, &addr, &metadata);
+
+        let retrieved_metadata = client.get_metadata(&name);
+        assert_eq!(retrieved_metadata, metadata);
+    }
+
+    #[test]
+    fn test_update_metadata() {
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "oracle");
+        let addr = Address::generate(&env);
+
+        client.register_route(&admin, &name, &addr, &None);
+
+        let description = String::from_str(&env, "Updated oracle");
+        let tags = vec![&env, String::from_str(&env, "v2")];
+        let metadata = Some(RouteMetadata {
+            description,
+            tags,
+            owner: None,
+        });
+
+        let events_before = env.events().all().len();
+        client.update_metadata(&admin, &name, &metadata);
+        let events_after = env.events().all().len();
+
+        assert_eq!(events_after, events_before + 1);
+
+        let retrieved = client.get_metadata(&name);
+        assert_eq!(retrieved, metadata);
+    }
+
+    #[test]
+    fn test_metadata_updated_event_includes_metadata() {
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "oracle");
+        let addr = Address::generate(&env);
+
+        client.register_route(&admin, &name, &addr, &None);
+
+        let description = String::from_str(&env, "Test metadata");
+        let tags = vec![&env, String::from_str(&env, "test")];
+        let metadata = Some(RouteMetadata {
+            description: description.clone(),
+            tags,
+            owner: None,
+        });
+
+        client.update_metadata(&admin, &name, &metadata);
+
+        let events = env.events().all();
+        let meta_event = events.iter().find(|e| {
+            e.1.get(0)
+                .map(|v| {
+                    let s: Symbol = v.into_val(&env);
+                    s == Symbol::new(&env, "metadata_updated")
+                })
+                .unwrap_or(false)
+        }).unwrap();
+
+        let (emitted_name, has_metadata): (String, bool) = meta_event.2.into_val(&env);
+        assert_eq!(emitted_name, name);
+        assert!(has_metadata);
+    }
+
+    #[test]
+    fn test_metadata_updated_event_when_cleared() {
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "oracle");
+        let addr = Address::generate(&env);
+
+        let description = String::from_str(&env, "Initial metadata");
+        let tags = vec![&env, String::from_str(&env, "test")];
+        let metadata = Some(RouteMetadata {
+            description,
+            tags,
+            owner: None,
+        });
+
+        client.register_route(&admin, &name, &addr, &metadata);
+
+        client.update_metadata(&admin, &name, &None);
+
+        let events = env.events().all();
+        let meta_event = events.iter().find(|e| {
+            e.1.get(0)
+                .map(|v| {
+                    let s: Symbol = v.into_val(&env);
+                    s == Symbol::new(&env, "metadata_updated")
+                })
+                .unwrap_or(false)
+        }).unwrap();
+
+        let (_emitted_name, has_metadata): (String, bool) = meta_event.2.into_val(&env);
+        assert!(!has_metadata);
+    }
+
+    #[test]
+    fn test_get_metadata_nonexistent_route() {
+        let (env, _admin, client) = setup();
+        let name = String::from_str(&env, "nonexistent");
+
+        let metadata = client.get_metadata(&name);
+        assert_eq!(metadata, None);
+    }
+
+    #[test]
+    fn test_set_route_paused_updates_updated_by() {
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "oracle");
+        let addr = Address::generate(&env);
+
+        // Register a route with admin A
+        client.register_route(&admin, &name, &addr, &None);
+
+        // Verify initial updated_by is admin
+        let entry = client.get_route(&name).unwrap();
+        assert_eq!(entry.updated_by, admin);
+
+        // Transfer admin to B
+        let new_admin = Address::generate(&env);
+        client.transfer_admin(&admin, &new_admin);
+
+        // Pause with B
+        client.set_route_paused(&new_admin, &name, &true);
+
+        // Verify updated_by is now B
+        let entry = client.get_route(&name).unwrap();
+        assert_eq!(entry.updated_by, new_admin);
     }
 }
