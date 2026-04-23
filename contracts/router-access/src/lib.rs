@@ -159,6 +159,10 @@ impl RouterAccess {
             .instance()
             .set(&DataKey::AddressRoles(target.clone()), &roles);
 
+        env.storage()
+            .instance()
+            .remove(&DataKey::RoleExpiry(role.clone(), target.clone()));
+
         env.events()
             .publish((Symbol::new(&env, "role_revoked"),), (role, target));
         Ok(())
@@ -544,6 +548,27 @@ mod tests {
 
         // Verify role is no longer present
         assert!(!client.has_role(&user, &role));
+    }
+
+    #[test]
+    fn test_revoke_role_removes_expiry() {
+        let (env, admin, client) = setup();
+        let role = String::from_str(&env, "editor");
+        let user = Address::generate(&env);
+
+        client.grant_role(&admin, &user, &role, &Some(100))
+            .expect("grant_role should succeed");
+
+        client.revoke_role(&admin, &role, &user);
+
+        // After revoke_role, is_role_expired returns false
+        assert!(!client.is_role_expired(&role, &user));
+
+        // No RoleExpiry key exists in storage
+        let has_expiry: bool = env.as_contract(&client.address, || {
+            env.storage().instance().has(&DataKey::RoleExpiry(role.clone(), user.clone()))
+        });
+        assert!(!has_expiry);
     }
 
     #[test]
