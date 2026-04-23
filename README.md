@@ -1,4 +1,4 @@
-# stellar-router
+# stellar-router [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) [![Language: Rust](https://img.shields.io/badge/language-Rust-orange.svg)](https://www.rust-lang.org/)
 
 A modular cross-contract routing infrastructure suite for Stellar/Soroban.
 
@@ -37,10 +37,10 @@ composable, upgradeable, and access-controlled multi-contract systems on Soroban
 | Contract | Description | Tests |
 |---|---|---|
 | `router-core` | Central dispatcher, route registration/resolution, pause controls | 8 |
-| `router-registry` | Versioned contract address registry with deprecation | 8 |
-| `router-access` | Role-based access control, blacklisting, role admins | 7 |
-| `router-middleware` | Rate limiting, route enable/disable, call event logging | 6 |
-| `router-timelock` | Delayed execution queue for sensitive config changes | 7 |
+| `router-registry` | Versioned contract address registry with deprecation support | 8 |
+| `router-access` | Role-based access control, blacklisting, and role admins | 7 |
+| `router-middleware` | Rate limiting, route enable/disable, and call event logging | 6 |
+| `router-timelock` | Delayed execution queue for sensitive configuration changes | 7 |
 | `router-multicall` | Batch multiple cross-contract calls in one transaction | 6 |
 
 ## Architecture
@@ -61,7 +61,7 @@ Role-based access control with three tiers:
 - **Role admin** — can grant/revoke a specific named role
 - **Role members** — hold a named role
 
-Addresses can be blacklisted to prevent them from ever being granted a role.
+Addresses can be blacklisted to prevent them from being granted any role.
 
 ### router-middleware
 Pre/post call hooks for any route. Supports:
@@ -78,7 +78,13 @@ Operations can be cancelled before execution.
 ### router-multicall
 Batches multiple cross-contract calls into a single transaction. Each call can be
 marked `required` (failure aborts the batch) or optional (failure is tracked but
-does not abort). Returns a `BatchSummary` with success/fail counts.
+does not abort). Returns a `BatchSummary` with success/failure counts.
+
+**Access Model:** `execute_batch` is a public function — any authenticated address
+can call it, not just the admin. This is intentional: `router-multicall` is designed
+as a public batching service where any caller can batch their own cross-contract
+calls to reduce round-trips. The admin role is only used for configuration (e.g.,
+setting `max_batch_size`).
 
 ## Getting Started
 
@@ -106,7 +112,7 @@ cargo test
 cargo build --target wasm32-unknown-unknown --release
 ```
 
-WASM files will be at:
+WASM files will be output to:
 ```
 target/wasm32-unknown-unknown/release/router_core.wasm
 target/wasm32-unknown-unknown/release/router_registry.wasm
@@ -195,6 +201,33 @@ stellar contract invoke --id <TIMELOCK_ID> --network testnet --source admin \
   --target <NEW_ORACLE_ADDRESS> \
   --delay 86400
 ```
+
+## FAQ
+
+**What is Soroban?**
+Soroban is the smart contract platform built into the Stellar network, designed for
+predictable performance and low fees. See the [official docs](https://developers.stellar.org/docs/build/smart-contracts/overview) for more.
+
+**Do I need to deploy all 6 contracts?**
+No. `router-core` is the only required contract — it handles route registration and
+resolution. The others are optional enhancements:
+- `router-registry` — only needed if you want versioned contract address management
+- `router-access` — only needed if you want role-based access control
+- `router-middleware` — only needed if you want rate limiting or call hooks
+- `router-timelock` — only needed if you want delayed execution of config changes
+- `router-multicall` — only needed if you want to batch multiple calls in one transaction
+
+**Can I use just one contract from this suite?**
+Yes. Each contract is independently deployable and usable. They are designed to
+complement each other but have no hard dependencies between them. You can deploy
+only the contracts that fit your use case.
+
+**What network should I use for development?**
+Use the Stellar **testnet**. It is a public network that mirrors mainnet behaviour
+but uses test tokens with no real value, so you can deploy and iterate freely without
+any cost. You can fund a testnet account using the
+[Stellar Friendbot](https://developers.stellar.org/docs/learn/fundamentals/networks).
+Only move to **mainnet** when your contracts are fully tested and audited.
 
 ## License
 
