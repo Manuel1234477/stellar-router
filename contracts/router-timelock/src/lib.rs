@@ -806,6 +806,24 @@ impl RouterTimelock {
             .unwrap_or(0)
     }
 
+    /// Returns true if a critical operation has collected enough approvals to be fast-tracked.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `op_id` - The operation ID to check.
+    ///
+    /// # Returns
+    /// `true` if approvals >= required_approvals, `false` otherwise or if op not found.
+    pub fn has_sufficient_approvals(env: Env, op_id: u64) -> bool {
+        let approvals: Vec<Address> = env.storage().instance()
+            .get(&DataKey::FastTrackApprovals(op_id))
+            .unwrap_or_else(|| Vec::new(&env));
+        let required: u32 = env.storage().instance()
+            .get(&DataKey::RequiredApprovals)
+            .unwrap_or(0);
+        required > 0 && approvals.len() >= required
+    }
+
     /// Update the minimum delay.
     ///
     /// # Arguments
@@ -1519,5 +1537,36 @@ mod tests {
         assert_eq!(topic, Symbol::new(&env, "all_cancelled"));
         let emitted_count: u64 = last.2.into_val(&env);
         assert_eq!(emitted_count, 2);
+    }
+
+    // ── has_sufficient_approvals ──────────────────────────────────────────────
+
+    #[test]
+    fn test_has_sufficient_approvals_false_initially() {
+        let (env, admin, client, _, _, _) = setup_with_council();
+        let target = Address::generate(&env);
+        let desc = String::from_str(&env, "critical fix");
+        let op_id = client.queue_critical(&admin, &desc, &target, &3600);
+        // No approvals yet
+        assert!(!client.has_sufficient_approvals(&op_id));
+    }
+
+    #[test]
+    fn test_has_sufficient_approvals_true_after_threshold_met() {
+        let (env, admin, client, m1, m2, _) = setup_with_council();
+        let target = Address::generate(&env);
+        let desc = String::from_str(&env, "critical fix");
+        let op_id = client.queue_critical(&admin, &desc, &target, &3600);
+        client.approve_critical(&m1, &op_id);
+        assert!(!client.has_sufficient_approvals(&op_id)); // only 1 of 2
+        client.approve_critical(&m2, &op_id);
+        assert!(client.has_sufficient_approvals(&op_id));  // 2 of 2 — threshold met
+    }
+
+    #[test]
+    fn test_has_sufficient_approvals_false_when_no_council_configured() {
+        let (env, _admin, client) = setup();
+        // No council set — required_approvals defaults to 0, must return false
+        assert!(!client.has_sufficient_approvals(&0));
     }
 }
