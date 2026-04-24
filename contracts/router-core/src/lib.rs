@@ -1565,6 +1565,9 @@ mod tests {
         let emitted_name: String = event.2.into_val(&env);
         assert_eq!(emitted_name, name); // Should be canonical name, not alias
         assert_ne!(emitted_name, alias); // Explicitly verify it's not the alias
+    }
+
+    #[test]
     fn test_update_metadata_valid_succeeds() {
         let (env, admin, client) = setup();
         let name = String::from_str(&env, "oracle");
