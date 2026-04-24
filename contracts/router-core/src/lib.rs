@@ -326,7 +326,7 @@ impl RouterCore {
         if entry.paused {
             env.events().publish(
                 (Symbol::new(&env, "route_resolve_paused"),),
-                (name.clone(),),
+                (resolved_name.clone(),),
             );
             return Err(RouterError::RoutePaused);
         }
@@ -704,15 +704,6 @@ impl RouterCore {
         Ok(())
     }
 
-    /// Returns `true` if `name` is empty or consists entirely of ASCII whitespace
-    /// characters (space 0x20, tab 0x09, newline 0x0A, vertical tab 0x0B,
-    /// form feed 0x0C, carriage return 0x0D).
-    fn is_empty_or_whitespace(name: &String) -> bool {
-        let s = name.to_string();
-        if s.is_empty() {
-            return true;
-        }
-        s.bytes().all(|b| matches!(b, 9 | 10 | 11 | 12 | 13 | 32))
     fn get_route_names(env: &Env) -> Vec<String> {
         env.storage()
             .instance()
@@ -720,8 +711,10 @@ impl RouterCore {
             .unwrap_or(Vec::new(env))
     }
 
+    /// Returns `true` if `name` is empty or consists entirely of ASCII whitespace
+    /// characters (space 0x20, tab 0x09, newline 0x0A, vertical tab 0x0B,
+    /// form feed 0x0C, carriage return 0x0D).
     fn is_empty_or_whitespace(name: &String) -> bool {
-        name.len() == 0
         if name.len() == 0 {
             return true;
         }
@@ -769,14 +762,17 @@ mod tests {
 
         // Verify route_registered event carries both name and address
         let events = env.events().all();
-        let reg_event = events.iter().find(|e| {
-            e.1.get(0)
-                .map(|v| {
-                    let s: Symbol = v.into_val(&env);
-                    s == Symbol::new(&env, "route_registered")
-                })
-                .unwrap_or(false)
-        }).unwrap();
+        let reg_event = events
+            .iter()
+            .find(|e| {
+                e.1.get(0)
+                    .map(|v| {
+                        let s: Symbol = v.into_val(&env);
+                        s == Symbol::new(&env, "route_registered")
+                    })
+                    .unwrap_or(false)
+            })
+            .unwrap();
         let (emitted_name, emitted_addr): (String, Address) = reg_event.2.into_val(&env);
         assert_eq!(emitted_name, name);
         assert_eq!(emitted_addr, addr);
@@ -937,6 +933,10 @@ mod tests {
         let (env, admin, client) = setup();
         let addr = Address::generate(&env);
         let result = client.try_register_route(&admin, &String::from_str(&env, "\n"), &addr);
+        assert_eq!(result, Err(Ok(RouterError::InvalidRouteName)));
+    }
+
+    #[test]
     fn test_transfer_admin_emits_event() {
         let (env, admin, client) = setup();
         let new_admin = Address::generate(&env);
@@ -1094,13 +1094,19 @@ mod tests {
         let (env, admin, client) = setup();
         let addr = Address::generate(&env);
         let result = client.try_register_route(&admin, &String::from_str(&env, "\r"), &addr);
+        assert_eq!(result, Err(Ok(RouterError::InvalidRouteName)));
+    }
+
+    #[test]
     fn test_register_whitespace_route_name_succeeds() {
         // Soroban strings don't support byte iteration so whitespace-only names
         // are treated as valid non-empty names.
         let (env, admin, client) = setup();
         let whitespace_name = String::from_str(&env, "   ");
         let addr = Address::generate(&env);
-        assert!(client.try_register_route(&admin, &whitespace_name, &addr).is_ok());
+        assert!(client
+            .try_register_route(&admin, &whitespace_name, &addr)
+            .is_ok());
         let result = client.try_register_route(&admin, &whitespace_name, &addr);
         assert_eq!(result, Err(Ok(RouterError::InvalidRouteName)));
     }
@@ -1111,6 +1117,9 @@ mod tests {
         let addr = Address::generate(&env);
         let result = client.try_register_route(&admin, &String::from_str(&env, " \t\n\r"), &addr);
         assert_eq!(result, Err(Ok(RouterError::InvalidRouteName)));
+    }
+
+    #[test]
     fn test_get_all_routes_updates_after_remove() {
         let (env, admin, client) = setup();
         let oracle = String::from_str(&env, "oracle");
@@ -1166,7 +1175,6 @@ mod tests {
         assert_eq!(result, Err(Ok(RouterError::RouterPaused)));
     }
 
-    #[test]
     #[test]
     fn test_pause_all_checked_before_route_lookup() {
         let (env, admin, client) = setup();
@@ -1263,6 +1271,9 @@ mod tests {
             client.try_add_alias(&admin, &name, &alias),
             Err(Ok(RouterError::RouteNotFound))
         );
+    }
+
+    #[test]
     fn test_register_route_with_metadata() {
         let (env, admin, client) = setup();
         let name = String::from_str(&env, "oracle");
@@ -1332,14 +1343,17 @@ mod tests {
         client.update_metadata(&admin, &name, &metadata);
 
         let events = env.events().all();
-        let meta_event = events.iter().find(|e| {
-            e.1.get(0)
-                .map(|v| {
-                    let s: Symbol = v.into_val(&env);
-                    s == Symbol::new(&env, "metadata_updated")
-                })
-                .unwrap_or(false)
-        }).unwrap();
+        let meta_event = events
+            .iter()
+            .find(|e| {
+                e.1.get(0)
+                    .map(|v| {
+                        let s: Symbol = v.into_val(&env);
+                        s == Symbol::new(&env, "metadata_updated")
+                    })
+                    .unwrap_or(false)
+            })
+            .unwrap();
 
         let (emitted_name, has_metadata): (String, bool) = meta_event.2.into_val(&env);
         assert_eq!(emitted_name, name);
@@ -1365,14 +1379,17 @@ mod tests {
         client.update_metadata(&admin, &name, &None);
 
         let events = env.events().all();
-        let meta_event = events.iter().find(|e| {
-            e.1.get(0)
-                .map(|v| {
-                    let s: Symbol = v.into_val(&env);
-                    s == Symbol::new(&env, "metadata_updated")
-                })
-                .unwrap_or(false)
-        }).unwrap();
+        let meta_event = events
+            .iter()
+            .find(|e| {
+                e.1.get(0)
+                    .map(|v| {
+                        let s: Symbol = v.into_val(&env);
+                        s == Symbol::new(&env, "metadata_updated")
+                    })
+                    .unwrap_or(false)
+            })
+            .unwrap();
 
         let (_emitted_name, has_metadata): (String, bool) = meta_event.2.into_val(&env);
         assert!(!has_metadata);
@@ -1412,6 +1429,19 @@ mod tests {
         assert_eq!(entry.updated_by, new_admin);
     }
 
+    #[test]
+    fn test_resolve_alias_to_paused_route_fails() {
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "oracle");
+        let alias = String::from_str(&env, "oracle_v1");
+        let addr = Address::generate(&env);
+        client.register_route(&admin, &name, &addr, &None);
+        client.add_alias(&admin, &name, &alias);
+        client.set_route_paused(&admin, &name, &true);
+        // Resolving alias should fail with RoutePaused
+        assert_eq!(
+            client.try_resolve(&alias),
+            Err(Ok(RouterError::RoutePaused))
     // ── RouteMetadata validation tests (issues #180 & #191) ──────────────────
 
     #[test]
@@ -1458,6 +1488,32 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_alias_to_paused_route_emits_canonical_name() {
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "oracle");
+        let alias = String::from_str(&env, "oracle_v1");
+        let addr = Address::generate(&env);
+
+        client.register_route(&admin, &name, &addr, &None);
+        client.add_alias(&admin, &name, &alias);
+        client.set_route_paused(&admin, &name, &true);
+
+        // Attempt to resolve the paused alias
+        let _ = client.try_resolve(&alias);
+
+        // Verify the route_resolve_paused event was emitted with canonical name
+        let event = env.events().all().last().unwrap().clone();
+        assert_eq!(event.0, client.address);
+        assert_eq!(
+            event.1,
+            vec![
+                &env,
+                Symbol::new(&env, "route_resolve_paused").into_val(&env)
+            ]
+        );
+        let emitted_name: String = event.2.into_val(&env);
+        assert_eq!(emitted_name, name); // Should be canonical name, not alias
+        assert_ne!(emitted_name, alias); // Explicitly verify it's not the alias
     fn test_update_metadata_valid_succeeds() {
         let (env, admin, client) = setup();
         let name = String::from_str(&env, "oracle");
