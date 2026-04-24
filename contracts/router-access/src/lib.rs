@@ -351,8 +351,6 @@ impl RouterAccess {
         if Self::is_blacklisted_internal(env, account) {
             return false;
         }
-
-    fn has_role_internal(env: &Env, role: &String, target: &Address) -> bool {
         let has_role = env
             .storage()
             .instance()
@@ -376,13 +374,6 @@ impl RouterAccess {
         }
 
         true
-    }
-
-    fn is_blacklisted_internal(env: &Env, target: &Address) -> bool {
-        env.storage()
-            .instance()
-            .get::<DataKey, bool>(&DataKey::Blacklisted(target.clone()))
-            .unwrap_or(false)
     }
 }
 
@@ -642,23 +633,24 @@ mod tests {
     }
     #[test]
     fn test_blacklisted_address_cannot_use_role() {
-        // Blacklisting an address should prevent it from using its roles
+        let (env, admin, client) = setup();
+        let role = String::from_str(&env, "operator");
+        let user = Address::generate(&env);
+
+        client.grant_role(&admin, &user, &role, &None);
+        assert!(client.has_role(&user, &role));
+
+        client.blacklist(&admin, &user);
+        assert!(!client.has_role(&user, &role));
+
+        client.unblacklist(&admin, &user);
+        assert!(client.has_role(&user, &role));
     }
 
     #[test]
     fn test_get_roles_for_address_populated_after_grant() {
         let (env, admin, client) = setup();
         let user = Address::generate(&env);
-
-        // Grant the role
-        client.grant_role(&admin, &role, &user, &None);
-        assert!(client.has_role(&role, &user));
-
-        // Blacklist the user
-        client.blacklist(&admin, &user);
-
-        // has_role should now return false even though the role is still stored
-        assert!(!client.has_role(&role, &user));
         let role1 = String::from_str(&env, "editor");
         let role2 = String::from_str(&env, "viewer");
 
@@ -698,13 +690,13 @@ mod tests {
         let role = String::from_str(&env, "operator");
         let user = Address::generate(&env);
         assert_eq!(
-            client.try_grant_role(&admin, &role, &user, &None),
+            client.try_grant_role(&admin, &user, &role, &None),
             Err(Ok(AccessError::Unauthorized))
         );
 
         // New admin should be able to grant roles
         assert!(client
-            .try_grant_role(&new_admin, &role, &user, &None)
+            .try_grant_role(&new_admin, &user, &role, &None)
             .is_ok());
     }
 
@@ -733,15 +725,15 @@ mod tests {
         let (env, admin, client) = setup();
         let role = String::from_str(&env, "operator");
         let user = Address::generate(&env);
-        client.grant_role(&admin, &role, &user);
-        assert!(client.has_role(&role, &user));
+        client.grant_role(&admin, &user, &role, &None);
+        assert!(client.has_role(&user, &role));
         client.revoke_role(&admin, &role, &user);
-        assert!(!client.has_role(&role, &user));
+        assert!(!client.has_role(&user, &role));
         // Re-granting must succeed — if the key was set to false instead of removed,
         // has_role_internal would return false but the key would still exist,
         // and a future implementation checking .has() would wrongly block the grant.
-        assert!(client.try_grant_role(&admin, &role, &user).is_ok());
-        assert!(client.has_role(&role, &user));
+        assert!(client.try_grant_role(&admin, &user, &role, &None).is_ok());
+        assert!(client.has_role(&user, &role));
     }
 
     #[test]

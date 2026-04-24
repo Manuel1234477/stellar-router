@@ -11,9 +11,7 @@
 //! - Deprecate old versions
 //! - Admin-controlled with ownership transfer
 
-use soroban_sdk::{contract, contractimpl, contracttype, contracterror, Address, Env, String, Symbol, Vec};
 extern crate alloc;
-use alloc::string::ToString;
 use alloc::string::ToString;
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, Address, Env, String, Symbol, Vec,
@@ -1092,4 +1090,3 @@ mod tests {
         assert!(names.contains(&name));
     }
 }
-

@@ -30,7 +30,6 @@ pub enum DataKey {
     EmergencyCouncil,        // Vec<Address>
     RequiredApprovals,       // u32 (M in M-of-N)
     FastTrackApprovals(u64), // op_id -> Vec<Address> (who has approved)
-    FastTrackEnabled,        // bool
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -1711,6 +1710,23 @@ mod tests {
         env.ledger().with_mut(|l| l.timestamp += 3601);
         // Execute should succeed — not affected by the new min_delay
         assert!(client.try_execute(&admin, &op_id).is_ok());
+    }
+
+    #[test]
+    fn test_set_min_delay_applies_to_new_ops() {
+        let (env, admin, client) = setup();
+        let target = Address::generate(&env);
+        let desc = String::from_str(&env, "upgrade oracle");
+        let deps = Vec::new(&env);
+
+        client.set_min_delay(&admin, &7200);
+
+        assert_eq!(
+            client.try_queue(&admin, &desc, &target, &3600, &deps),
+            Err(Ok(TimelockError::InvalidDelay))
+        );
+
+        assert!(client.try_queue(&admin, &desc, &target, &7200, &deps).is_ok());
     }
 
     // ── Issue #186: get_council and get_required_approvals getters ───────────────
