@@ -1713,6 +1713,25 @@ mod tests {
         assert!(client.try_execute(&admin, &op_id).is_ok());
     }
 
+    #[test]
+    fn test_set_min_delay_applies_to_new_ops_only() {
+        let (env, admin, client) = setup(); // min_delay = 3600
+        let target = Address::generate(&env);
+        let desc = String::from_str(&env, "upgrade oracle");
+        let deps = Vec::new(&env);
+
+        client.set_min_delay(&admin, &7200);
+
+        // Old delay should now fail
+        assert_eq!(
+            client.try_queue(&admin, &desc, &target, &3600, &deps),
+            Err(Ok(TimelockError::InvalidDelay))
+        );
+
+        // New delay should succeed
+        assert!(client.try_queue(&admin, &desc, &target, &7200, &deps).is_ok());
+    }
+
     // ── Issue #186: get_council and get_required_approvals getters ───────────────
 
     #[test]

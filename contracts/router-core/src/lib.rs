@@ -855,7 +855,7 @@ mod tests {
         let name = String::from_str(&env, "oracle");
         let addr = Address::generate(&env);
 
-        client.register_route(&admin, &name, &addr);
+        client.register_route(&admin, &name, &addr, &None);
         client.set_route_paused(&admin, &name, &true);
 
         // Attempt to resolve the paused route
@@ -892,7 +892,7 @@ mod tests {
         let attacker = Address::generate(&env);
         let name = String::from_str(&env, "oracle");
         let addr = Address::generate(&env);
-        let result = client.try_register_route(&attacker, &name, &addr);
+        let result = client.try_register_route(&attacker, &name, &addr, &None);
         assert_eq!(result, Err(Ok(RouterError::Unauthorized)));
     }
 
@@ -1151,7 +1151,7 @@ mod tests {
         client.remove_route(&admin, &oracle);
         assert_eq!(client.get_all_routes().len(), 0);
 
-        client.register_route(&admin, &oracle, &addr2);
+        client.register_route(&admin, &oracle, &addr2, &None);
         let routes = client.get_all_routes();
         assert_eq!(routes.len(), 1);
         assert!(routes.contains(&oracle));
@@ -1243,7 +1243,7 @@ mod tests {
         let alias = String::from_str(&env, "oracle_v1");
         let addr = Address::generate(&env);
 
-        client.register_route(&admin, &name, &addr);
+        client.register_route(&admin, &name, &addr, &None);
         client.add_alias(&admin, &name, &alias);
 
         // Remove the underlying route
@@ -1263,7 +1263,7 @@ mod tests {
         let alias = String::from_str(&env, "oracle_alias");
         let addr = Address::generate(&env);
 
-        client.register_route(&admin, &name, &addr);
+        client.register_route(&admin, &name, &addr, &None);
         client.remove_route(&admin, &name);
 
         // Should fail — target route no longer exists
@@ -1442,6 +1442,9 @@ mod tests {
         assert_eq!(
             client.try_resolve(&alias),
             Err(Ok(RouterError::RoutePaused))
+        );
+    }
+
     // ── RouteMetadata validation tests (issues #180 & #191) ──────────────────
 
     #[test]

@@ -11,11 +11,11 @@
 /// absent, or `Err($unauth_err)` if the caller does not match.
 ///
 /// # Arguments
-/// * `$env`         — `&Env` reference
-/// * `$caller`      — `&Address` to validate
-/// * `$key`         — storage key whose value is the admin `Address`
+/// * `$env`          — `&Env` reference
+/// * `$caller`       — `&Address` to validate
+/// * `$key`          — storage key whose value is the admin `Address`
 /// * `$not_init_err` — error variant returned when the key is missing
-/// * `$unauth_err`  — error variant returned when the caller is not the admin
+/// * `$unauth_err`   — error variant returned when the caller is not the admin
 ///
 /// # Example
 ///
@@ -38,7 +38,7 @@ macro_rules! require_admin {
     }};
 }
 
-/// Returns `true` if `name` is empty or consists entirely of ASCII whitespace
+/// Returns `true` if `s` is empty or consists entirely of ASCII whitespace
 /// (space 0x20, tab 0x09, newline 0x0A, vertical tab 0x0B, form feed 0x0C,
 /// carriage return 0x0D).
 ///
@@ -99,41 +99,4 @@ mod tests {
     fn test_name_with_surrounding_spaces_is_not_whitespace_only() {
         assert!(!is_whitespace_only(" oracle "));
     }
-}
-#![no_std]
-
-use soroban_sdk::{Address, Env, Symbol};
-
-/// Macro to require admin with custom error types.
-///
-/// This eliminates the repetitive `require_admin` / `require_super_admin` boilerplate
-/// across all router contracts while allowing each contract to use its own error enum.
-#[macro_export]
-macro_rules! require_admin {
-    ($env:expr, $caller:expr, $data_key:expr, $not_init_err:expr, $unauth_err:expr) => {{
-        let admin: soroban_sdk::Address = $env
-            .storage()
-            .instance()
-            .get($data_key)
-            .ok_or($not_init_err)?;
-
-        if &admin != $caller {
-            return Err($unauth_err);
-        }
-        Ok(())
-    }};
-}
-
-/// Convenience version when using DataKey::Admin and standard error variants
-#[macro_export]
-macro_rules! require_admin_simple {
-    ($env:expr, $caller:expr, $data_key:expr, $error_type:ty) => {
-        $crate::require_admin!(
-            $env,
-            $caller,
-            $data_key,
-            <$error_type>::NotInitialized,
-            <$error_type>::Unauthorized
-        )
-    };
 }
