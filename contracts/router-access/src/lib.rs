@@ -736,6 +736,7 @@ mod tests {
     fn test_revoke_role_removes_storage_key() {
         // Verifies revoke_role removes the HasRole key rather than setting it to false,
         // so a subsequent grant_role on the same (role, target) pair succeeds.
+        // grant_role uses signature (admin, account, role, expires_in).
         let (env, admin, client) = setup();
         let role = String::from_str(&env, "operator");
         let user = Address::generate(&env);
