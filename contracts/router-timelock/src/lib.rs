@@ -239,6 +239,7 @@ impl RouterTimelock {
             return Err(TimelockError::FastTrackDisabled);
         }
 
+        // Validate the description once before delay checks.
         if description.len() == 0 {
             return Err(TimelockError::InvalidDescription);
         }
