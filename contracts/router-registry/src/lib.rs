@@ -378,13 +378,8 @@ impl RouterRegistry {
         entries: Vec<(String, u32)>,
     ) -> Vec<Result<(), RegistryError>> {
         caller.require_auth();
+        Self::require_admin(&env, &caller)?;
         let mut results = Vec::new(&env);
-        if Self::require_admin(&env, &caller).is_err() {
-            for _ in entries.iter() {
-                results.push_back(Err(RegistryError::Unauthorized));
-            }
-            return results;
-        }
         for (name, version) in entries.iter() {
             results.push_back(Self::deprecate_one(&env, name, version));
         }
